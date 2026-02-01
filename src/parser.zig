@@ -12,7 +12,10 @@ pub const Expr = struct {
         int: i32,
         op: std.ArrayList(*Expr),
         def: struct { name: []const u8, expr: *Expr },
+        plot: *Expr,
     },
+    dim: usize,
+    deps: std.ArrayList([]u8),
 
     fn alloc(self: Expr, allocator: std.mem.Allocator) !*Expr {
         const ptr = try allocator.create(Expr);
@@ -20,7 +23,30 @@ pub const Expr = struct {
         return ptr;
     }
 
-    fn free(self: *Expr, allocator: std.mem.Allocator) void {
+    pub fn deep_clone(self: *Expr, allocator: std.mem.Allocator) !*Expr {
+        const ptr = try allocator.create(Expr);
+        ptr.loc = self.loc;
+
+        switch (self.expr) {
+            .sym => ptr.expr = .{ .sym = try allocator.dupe(u8, self.expr.sym) },
+            .int => ptr.expr = .{ .int = self.expr.int },
+            .op => {
+                ptr.expr = .{ .op = .empty };
+                for (self.expr.op.items) |e| {
+                    try ptr.expr.op.append(allocator, try e.deep_clone(allocator));
+                }
+            },
+            .def => ptr.expr = .{ .def = .{
+                .name = try allocator.dupe(u8, self.expr.def.name),
+                .expr = try self.expr.def.expr.deep_clone(allocator),
+            } },
+            .plot => ptr.expr = .{ .plot = try self.expr.plot.deep_clone(allocator) },
+        }
+
+        return ptr;
+    }
+
+    pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
             .sym => {},
             .int => {},
@@ -31,8 +57,26 @@ pub const Expr = struct {
                 self.expr.op.deinit(allocator);
             },
             .def => self.expr.def.expr.free(allocator),
+            .plot => self.expr.plot.free(allocator),
         }
         allocator.destroy(self);
+    }
+
+    pub fn format(self: Expr, w: *std.Io.Writer) !void {
+        switch (self.expr) {
+            .sym => try w.print("{s}", .{self.expr.sym}),
+            .int => try w.print("{}", .{self.expr.int}),
+            .op => {
+                try w.print("(", .{});
+                for (self.expr.op.items, 0..) |e, i| {
+                    if (i > 0) try w.print(" ", .{});
+                    try w.print("{f}", .{e});
+                }
+                try w.print(")", .{});
+            },
+            .def => try w.print("(def {s} {f})", .{ self.expr.def.name, self.expr.def.expr }),
+            .plot => try w.print("(plot {f})", .{self.expr.plot}),
+        }
     }
 };
 
@@ -44,6 +88,7 @@ const Token = struct {
         open,
         close,
         def,
+        plot,
     },
 };
 
@@ -112,6 +157,8 @@ const Tokenizer = struct {
             else => {
                 if (std.mem.startsWith(u8, self.buffer, "def")) {
                     return self.consume(3, .def);
+                } else if (std.mem.startsWith(u8, self.buffer, "plot")) {
+                    return self.consume(4, .plot);
                 } else if (std.ascii.isDigit(c)) {
                     var i: usize = 1;
                     while (i < self.buffer.len and std.ascii.isDigit(self.buffer[i])) i += 1;
@@ -199,6 +246,13 @@ pub const Parser = struct {
                     const end_loc = (try self.tok.expect(.close)).loc;
 
                     return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .def = .{ .name = name, .expr = expr } } }).alloc(self.allocator);
+                } else if (try self.tok.next_if_kind(.plot)) |_| {
+                    const expr = try self.next_expect();
+                    errdefer expr.free(self.allocator);
+
+                    const end_loc = (try self.tok.expect(.close)).loc;
+
+                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .plot = expr } }).alloc(self.allocator);
                 } else {
                     var args = std.ArrayList(*Expr).empty;
                     errdefer {
@@ -221,7 +275,7 @@ pub const Parser = struct {
                     return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .op = args } }).alloc(self.allocator);
                 }
             },
-            .close, .def => {
+            .close, .def, .plot => {
                 if (self.logerror) printError(token.loc, "unexpected token", .{});
                 return ParserError.UnexpectedToken;
             },

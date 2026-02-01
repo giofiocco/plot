@@ -6,10 +6,11 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = b.graph.host,
+            .link_libc = true,
         }),
     });
-    exe.linkLibC();
-    exe.addIncludePath(b.path("lib"));
+    exe.root_module.addIncludePath(b.path("lib"));
+    exe.root_module.linkSystemLibrary("ncurses", .{});
 
     b.installArtifact(exe);
 
