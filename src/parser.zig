@@ -14,8 +14,6 @@ pub const Expr = struct {
         def: struct { name: []const u8, expr: *Expr },
         plot: *Expr,
     },
-    dim: usize,
-    deps: std.ArrayList([]u8),
 
     fn alloc(self: Expr, allocator: std.mem.Allocator) !*Expr {
         const ptr = try allocator.create(Expr);
@@ -94,6 +92,7 @@ const Token = struct {
 
 const TokenKind = std.meta.Tag(@FieldType(Token, "token"));
 
+// TODO: put it in Parser.Error
 const ParserError = error{
     InvalidChar,
     UnexpectedToken,
@@ -150,6 +149,13 @@ const Tokenizer = struct {
                 var newline: usize = 0;
                 while (newline < self.buffer.len and self.buffer[newline] != '\n') newline += 1;
                 self.loc.line = self.buffer[0..newline];
+                return try self.next();
+            },
+            '#' => {
+                var i: usize = 1;
+                while (i < self.buffer.len and self.buffer[i] != '\n') i += 1;
+                self.buffer = self.buffer[i..];
+                self.loc.col += i;
                 return try self.next();
             },
             '(' => return self.consume(1, .open),
@@ -261,15 +267,14 @@ pub const Parser = struct {
                         }
                         args.deinit(self.allocator);
                     }
-
                     try args.append(self.allocator, try self.next_expect());
-
                     while (((try self.tok.peek()) orelse {
                         if (self.logerror) printError(self.tok.loc, "unexpected EOF", .{});
                         return ParserError.UnexpectedEOF;
                     }).token != .close) {
                         try args.append(self.allocator, try self.next_expect());
                     }
+
                     const end_loc = (try self.tok.expect(.close)).loc;
 
                     return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .op = args } }).alloc(self.allocator);
@@ -289,6 +294,13 @@ pub const Parser = struct {
 };
 
 const expect = std.testing.expect;
+
+test "tokenizer-comment" {
+    const buffer: []const u8 = "# 2\n3";
+    var tok = Tokenizer.init(buffer, "test", false);
+    const token = (try tok.next()).?.token;
+    try expect(token == .int and token.int == 3);
+}
 
 test "tokenizer" {
     const buffer: []const u8 = "(def f (^ x 2))";
@@ -324,12 +336,12 @@ test "parser-def-dont-leak" {
 }
 
 test "parser-op" {
-    var par = Parser.init("(^ x 2)", "test", std.testing.allocator, false);
+    var par = Parser.init("(^ 2 x)", "test", std.testing.allocator, false);
     const expr = (try par.next()).?;
     defer expr.free(std.testing.allocator);
     try expect(std.mem.eql(u8, expr.expr.op.items[0].expr.sym, "^"));
-    try expect(std.mem.eql(u8, expr.expr.op.items[1].expr.sym, "x"));
-    try expect(expr.expr.op.items[2].expr.int == 2);
+    try expect(expr.expr.op.items[1].expr.int == 2);
+    try expect(std.mem.eql(u8, expr.expr.op.items[2].expr.sym, "x"));
 }
 
 test "parser-op-dont-leak" {
