@@ -164,6 +164,7 @@ pub const Canvas = struct {
     data: []u8,
 
     const with_lines = false;
+    const epsilon = 0.01;
 
     pub fn init(allocator: std.mem.Allocator, width: usize, height: usize, scale: f64, origin: union(enum) { point: Point, anchor: Anchor }) std.mem.Allocator.Error!Canvas {
         const canvas = Canvas{
@@ -228,10 +229,14 @@ pub const Canvas = struct {
     }
 
     pub fn plot(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+        assert(!bytecodes.y);
+
+        var float_y = if (!bytecodes.x) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
+
         var last: ?Point = null;
         for (0..self.width) |x| {
             const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
-            const float_y = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
+            if (bytecodes.x) float_y = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
 
             const p = Point{ .x = float_x, .y = float_y };
             if (with_lines) {
@@ -265,7 +270,7 @@ pub const Canvas = struct {
                 if (bytecodes_a.x and bytecodes_a.y) a = try self.bytecode_vm.eval(self.allocator, bytecodes_a, float_x, float_y);
                 if (bytecodes_b.x and bytecodes_b.y) b = try self.bytecode_vm.eval(self.allocator, bytecodes_b, float_x, float_y);
 
-                if (@abs(a - b) < self.scale) {
+                if (@abs(a - b) < epsilon) {
                     self.data[y * self.width + x] = 255;
                 }
             }

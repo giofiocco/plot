@@ -9,7 +9,7 @@ pub const Expr = struct {
     loc: Loc,
     expr: union(enum) {
         sym: []const u8,
-        int: i32,
+        num: f64,
         op: std.ArrayList(*Expr),
         def: struct { name: []const u8, expr: *Expr },
         plot: *Expr,
@@ -26,19 +26,19 @@ pub const Expr = struct {
         ptr.loc = self.loc;
 
         switch (self.expr) {
-            .sym => ptr.expr = .{ .sym = try allocator.dupe(u8, self.expr.sym) },
-            .int => ptr.expr = .{ .int = self.expr.int },
-            .op => {
+            .sym => |sym| ptr.expr = .{ .sym = try allocator.dupe(u8, sym) },
+            .num => |n| ptr.expr = .{ .num = n },
+            .op => |args| {
                 ptr.expr = .{ .op = .empty };
-                for (self.expr.op.items) |e| {
+                for (args.items) |e| {
                     try ptr.expr.op.append(allocator, try e.deep_clone(allocator));
                 }
             },
-            .def => ptr.expr = .{ .def = .{
-                .name = try allocator.dupe(u8, self.expr.def.name),
-                .expr = try self.expr.def.expr.deep_clone(allocator),
+            .def => |def| ptr.expr = .{ .def = .{
+                .name = try allocator.dupe(u8, def.name),
+                .expr = try def.expr.deep_clone(allocator),
             } },
-            .plot => ptr.expr = .{ .plot = try self.expr.plot.deep_clone(allocator) },
+            .plot => |plot| ptr.expr = .{ .plot = try plot.deep_clone(allocator) },
         }
 
         return ptr;
@@ -47,7 +47,7 @@ pub const Expr = struct {
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
             .sym => {},
-            .int => {},
+            .num => {},
             .op => {
                 for (self.expr.op.items) |e| {
                     e.free(allocator);
@@ -62,18 +62,18 @@ pub const Expr = struct {
 
     pub fn format(self: Expr, w: *std.Io.Writer) !void {
         switch (self.expr) {
-            .sym => try w.print("{s}", .{self.expr.sym}),
-            .int => try w.print("{}", .{self.expr.int}),
-            .op => {
+            .sym => |sym| try w.print("{s}", .{sym}),
+            .num => |n| try w.print("{}", .{n}),
+            .op => |op| {
                 try w.print("(", .{});
-                for (self.expr.op.items, 0..) |e, i| {
+                for (op.items, 0..) |e, i| {
                     if (i > 0) try w.print(" ", .{});
                     try w.print("{f}", .{e});
                 }
                 try w.print(")", .{});
             },
-            .def => try w.print("(def {s} {f})", .{ self.expr.def.name, self.expr.def.expr }),
-            .plot => try w.print("(plot {f})", .{self.expr.plot}),
+            .def => |def| try w.print("(def {s} {f})", .{ def.name, def.expr }),
+            .plot => |plot| try w.print("(plot {f})", .{plot}),
         }
     }
 };
@@ -82,7 +82,7 @@ const Token = struct {
     loc: Loc,
     token: union(enum) {
         sym: []const u8,
-        int: i32,
+        num: f64,
         open,
         close,
         def,
@@ -168,8 +168,12 @@ const Tokenizer = struct {
                 } else if (std.ascii.isDigit(c)) {
                     var i: usize = 1;
                     while (i < self.buffer.len and std.ascii.isDigit(self.buffer[i])) i += 1;
-                    const num = try std.fmt.parseInt(@FieldType(@FieldType(Token, "token"), "int"), self.buffer[0..i], 10);
-                    return self.consume(i, .{ .int = num });
+                    if (i < self.buffer.len and self.buffer[i] == '.') {
+                        i += 1;
+                        while (i < self.buffer.len and std.ascii.isDigit(self.buffer[i])) i += 1;
+                    }
+                    const num = try std.fmt.parseFloat(f64, self.buffer[0..i]);
+                    return self.consume(i, .{ .num = num });
                 } else if (isSym(c)) {
                     var i: usize = 1;
                     while (i < self.buffer.len and isSym(self.buffer[i])) i += 1;
@@ -234,13 +238,13 @@ pub const Parser = struct {
         };
 
         switch (token.token) {
-            .sym => {
+            .sym => |sym| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .sym = token.token.sym } }).alloc(self.allocator);
+                return (Expr{ .loc = token.loc, .expr = .{ .sym = sym } }).alloc(self.allocator);
             },
-            .int => {
+            .num => |n| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .int = token.token.int } }).alloc(self.allocator);
+                return (Expr{ .loc = token.loc, .expr = .{ .num = n } }).alloc(self.allocator);
             },
             .open => {
                 _ = try self.tok.next();

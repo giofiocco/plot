@@ -65,7 +65,7 @@ const State = struct {
                 //     @panic("todo");
                 // }
             },
-            .int => |n| try bytecodes.?.append(self.allocator, .{ .num = @floatFromInt(n) }),
+            .num => |n| try bytecodes.?.append(self.allocator, .{ .num = n }),
             .op => |op| {
                 assert(op.items[0].expr == .sym);
                 if (std.mem.eql(u8, op.items[0].expr.sym, "^")) {
