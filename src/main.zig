@@ -24,21 +24,31 @@ const Variable = canvasmod.Variable;
 
 const State = struct {
     vars: std.StringArrayHashMap(*Expr),
+    canvas: Canvas,
     allocator: std.mem.Allocator,
     logerror: bool,
 
     const Error = error{Redefinition} || canvasmod.BytecodeVM.Error || std.mem.Allocator.Error;
 
-    fn init(allocator: std.mem.Allocator, logerror: bool) State {
+    fn init(allocator: std.mem.Allocator, logerror: bool) std.mem.Allocator.Error!State {
         return .{
             .vars = .init(allocator),
+            .canvas = try .init(allocator, 500, 500, 0.01, .{ .anchor = .center }),
             .allocator = allocator,
             .logerror = logerror,
         };
     }
 
     fn deinit(self: *State) void {
+        var iter = self.vars.iterator();
+        // TODO: leak of (def f ...)
+        // TODO: token variable and operations
+        while (iter.next()) |entry| {
+            entry.value_ptr.*.deep_free(self.allocator);
+        }
+
         self.vars.deinit();
+        self.canvas.deinit();
     }
 
     // TODO: error if null
@@ -57,36 +67,19 @@ const State = struct {
                         @panic("todo");
                     }
                 }
-                // } else if (std.mem.eql(u8, str, "x")) {
-                //     try bytecodes.?.append(self.allocator, .{ .variable = .x });
-                // } else if (std.mem.eql(u8, str, "y")) {
-                //     try bytecodes.?.append(self.allocator, .{ .variable = .x });
-                // } else {
-                //     @panic("todo");
-                // }
             },
             .num => |n| try bytecodes.?.append(self.allocator, .{ .num = n }),
-            .op => |op| {
-                assert(op.items[0].expr == .sym);
-                if (std.mem.eql(u8, op.items[0].expr.sym, "^")) {
-                    assert(op.items.len == 3);
-                    try self.eval(op.items[2], bytecodes);
-                    try self.eval(op.items[1], bytecodes);
-                    try bytecodes.?.append(self.allocator, .{ .op = .pow });
-                } else if (std.mem.eql(u8, op.items[0].expr.sym, "-")) {
-                    assert(op.items.len == 3);
-                    try self.eval(op.items[2], bytecodes);
-                    try self.eval(op.items[1], bytecodes);
-                    try bytecodes.?.append(self.allocator, .{ .op = .sub });
-                } else if (std.mem.eql(u8, op.items[0].expr.sym, "+")) {
-                    assert(op.items.len == 3);
-                    try self.eval(op.items[2], bytecodes);
-                    try self.eval(op.items[1], bytecodes);
-                    try bytecodes.?.append(self.allocator, .{ .op = .sum });
-                } else if (std.mem.eql(u8, op.items[0].expr.sym, "sin")) {
-                    assert(op.items.len == 2);
-                    try self.eval(op.items[1], bytecodes);
-                    try bytecodes.?.append(self.allocator, .{ .op = .sin });
+            .op => @panic("todo"),
+            .app => |app| {
+                assert(app.items[0].expr == .op);
+
+                if (app.items[0].expr == .op) {
+                    const n = app.items[0].expr.op.argNumber();
+                    if (app.items.len != n + 1) @panic("TODO: throw error");
+                    for (app.items[1..]) |e| {
+                        try self.eval(e, bytecodes);
+                    }
+                    try bytecodes.?.append(self.allocator, .{ .op = app.items[0].expr.op });
                 } else {
                     @panic("todo");
                 }
@@ -102,26 +95,20 @@ const State = struct {
             },
             .plot => |plot| {
                 assert(bytecodes == null);
-                var canvas = try Canvas.init(self.allocator, 100, 100, 0.05, .{ .anchor = .center });
-                defer canvas.deinit();
 
-                if (plot.expr == .op and plot.expr.op.items[0].expr == .sym and std.mem.eql(u8, plot.expr.op.items[0].expr.sym, "=")) {
-                    var code_a = BytecodeList.empty;
-                    defer code_a.deinit(self.allocator);
-                    try self.eval(plot.expr.op.items[1], &code_a);
+                var code = BytecodeList.empty;
+                try self.eval(plot, &code);
+                defer code.deinit(self.allocator);
 
-                    var code_b = BytecodeList.empty;
-                    defer code_b.deinit(self.allocator);
-                    try self.eval(plot.expr.op.items[2], &code_b);
-                    try canvas.plot_intersection(code_a, code_b);
+                if (code.x and code.y) {
+                    try self.canvas.plotXY(code);
+                } else if (code.x) {
+                    try self.canvas.plotX(code);
                 } else {
-                    var code = BytecodeList.empty;
-                    defer code.deinit(self.allocator);
-                    try self.eval(plot, &code);
-                    try canvas.plot(code);
+                    @panic("TODO plot y");
                 }
 
-                canvas.saveToFile("x2.png");
+                self.canvas.saveToFile("x2.png");
             },
         }
     }
@@ -145,7 +132,7 @@ pub fn main() !void {
     const content = try std.fs.cwd().readFileAlloc(allocator, filename, std.math.maxInt(usize));
     defer allocator.free(content);
 
-    var state = State.init(allocator, true);
+    var state = try State.init(allocator, true);
     defer state.deinit();
 
     var par = Parser.init(content, filename, allocator, true);

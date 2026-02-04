@@ -8,13 +8,28 @@ pub const Operator = enum {
     sin,
     sub,
     sum,
+    mul,
+    eq,
+    lt,
 
-    fn toString(self: Operator) []u8 {
+    const max_args = 2;
+
+    pub fn toString(self: Operator) []const u8 {
         return switch (self) {
             .pow => "^",
             .sin => "sin",
             .sub => "-",
-            .sub => "+",
+            .sum => "+",
+            .mul => "*",
+            .eq => "=",
+            .lt => "<",
+        };
+    }
+
+    pub fn argNumber(self: Operator) usize {
+        return switch (self) {
+            .pow, .sub, .sum, .mul, .eq, .lt => 2,
+            .sin => 1,
         };
     }
 };
@@ -97,11 +112,12 @@ pub const Point = struct {
 
 pub const BytecodeVM = struct {
     stack: std.ArrayList(f64),
+    args: [Operator.max_args]f64,
 
     pub const Error = error{ MissingOpArgs, UnusedValues, NoResultValue } || std.mem.Allocator.Error;
 
     fn init() BytecodeVM {
-        return .{ .stack = .empty };
+        return .{ .stack = .empty, .args = undefined };
     }
 
     fn deinit(self: *BytecodeVM, allocator: std.mem.Allocator) void {
@@ -117,30 +133,20 @@ pub const BytecodeVM = struct {
                     .x => try self.stack.append(allocator, x),
                     .y => try self.stack.append(allocator, y),
                 },
-                .op => |op| switch (op) {
-                    .pow => {
-                        if (self.stack.items.len < 2) return BytecodeVM.Error.MissingOpArgs;
-                        const n = self.stack.pop().?;
-                        const m = self.stack.pop().?;
-                        try self.stack.append(allocator, std.math.pow(f64, m, n));
-                    },
-                    .sin => {
-                        if (self.stack.items.len < 1) return BytecodeVM.Error.MissingOpArgs;
-                        const n = self.stack.pop().?;
-                        try self.stack.append(allocator, std.math.sin(n));
-                    },
-                    .sub => {
-                        if (self.stack.items.len < 2) return BytecodeVM.Error.MissingOpArgs;
-                        const n = self.stack.pop().?;
-                        const m = self.stack.pop().?;
-                        try self.stack.append(allocator, m - n);
-                    },
-                    .sum => {
-                        if (self.stack.items.len < 2) return BytecodeVM.Error.MissingOpArgs;
-                        const n = self.stack.pop().?;
-                        const m = self.stack.pop().?;
-                        try self.stack.append(allocator, m + n);
-                    },
+                .op => |op| {
+                    for (0..op.argNumber()) |i| {
+                        self.args[i] = self.stack.pop().?;
+                    }
+
+                    switch (op) {
+                        .pow => try self.stack.append(allocator, std.math.pow(f64, self.args[0], self.args[1])),
+                        .sin => try self.stack.append(allocator, std.math.sin(self.args[0])),
+                        .sub => try self.stack.append(allocator, self.args[1] - self.args[0]),
+                        .sum => try self.stack.append(allocator, self.args[0] + self.args[1]),
+                        .mul => try self.stack.append(allocator, self.args[0] * self.args[1]),
+                        .eq => try self.stack.append(allocator, std.math.clamp(1 - 30 * @abs(self.args[0] - self.args[1]), 0, 1)),
+                        .lt => try self.stack.append(allocator, std.math.clamp(30 * (self.args[0] - self.args[1]), 0, 1)),
+                    }
                 },
             }
         }
@@ -162,9 +168,6 @@ pub const Canvas = struct {
     scale: f64,
     origin: Point,
     data: []u8,
-
-    const with_lines = false;
-    const epsilon = 0.01;
 
     pub fn init(allocator: std.mem.Allocator, width: usize, height: usize, scale: f64, origin: union(enum) { point: Point, anchor: Anchor }) std.mem.Allocator.Error!Canvas {
         const canvas = Canvas{
@@ -192,87 +195,40 @@ pub const Canvas = struct {
         self.bytecode_vm.deinit(self.allocator);
     }
 
-    fn drawLine(self: *Canvas, from: Point, to: Point) void {
-        const fromx: usize = @intFromFloat(from.x / self.scale + self.origin.x);
-        const tox: usize = @intFromFloat(to.x / self.scale + self.origin.x);
-        var fromy: isize = @intFromFloat(from.y / self.scale + self.origin.y);
-        var toy: isize = @intFromFloat(to.y / self.scale + self.origin.y);
-
-        if (toy < fromy) {
-            const tmp = toy;
-            toy = fromy;
-            fromy = tmp;
-        } else if (toy == fromy) {
-            toy += 1;
-        }
-
-        if (toy < 0) {
-            return;
-        } else if (fromy < 0) {
-            fromy = 0;
-        }
-
-        if (fromx < self.width and fromy < self.height) {
-            self.data[@as(usize, @intCast(fromy)) * self.width + fromx] = 255;
-        }
-        if (tox < self.width and toy < self.height) {
-            self.data[@as(usize, @intCast(toy)) * self.width + tox] = 255;
-        }
-
-        // for (@intCast(fromy)..@intCast(toy)) |y| {
-        //     for (fromx..tox) |x| {
-        //         if (x < self.width and y < self.height) {
-        //             self.data[y * self.width + x] = 255;
-        //         }
-        //     }
-        // }
-    }
-
-    pub fn plot(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+    pub fn plotX(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
         assert(!bytecodes.y);
 
-        var float_y = if (!bytecodes.x) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
-
-        var last: ?Point = null;
-        for (0..self.width) |x| {
-            const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
-            if (bytecodes.x) float_y = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
-
-            const p = Point{ .x = float_x, .y = float_y };
-            if (with_lines) {
-                if (last) |a| {
-                    self.drawLine(a, p);
-                }
-                last = p;
-            } else {
-                const y: isize = @intFromFloat(float_y / self.scale + self.origin.y);
-                if (0 < y and y < self.height) {
-                    self.data[@as(usize, @intCast(y)) * self.width + x] = 255;
-                }
-            }
-        }
-    }
-
-    // TODO: line mode
-    pub fn plot_intersection(self: *Canvas, bytecodes_a: BytecodeList, bytecodes_b: BytecodeList) BytecodeVM.Error!void {
-        var a = if (!bytecodes_a.x and !bytecodes_a.y) try self.bytecode_vm.eval(self.allocator, bytecodes_a, 0, 0) else 0;
-        var b = if (!bytecodes_b.x and !bytecodes_b.y) try self.bytecode_vm.eval(self.allocator, bytecodes_b, 0, 0) else 0;
+        var v = if (!bytecodes.x) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
 
         for (0..self.width) |x| {
             const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
-
-            if (bytecodes_a.x and !bytecodes_a.y) a = try self.bytecode_vm.eval(self.allocator, bytecodes_a, float_x, 0);
-            if (bytecodes_b.x and !bytecodes_b.y) b = try self.bytecode_vm.eval(self.allocator, bytecodes_b, float_x, 0);
+            if (bytecodes.x) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
 
             for (0..self.height) |y| {
                 const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
+                const color = std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1);
+                self.data[y * self.width + x] +%= @intFromFloat(255 * color);
+            }
 
-                if (bytecodes_a.x and bytecodes_a.y) a = try self.bytecode_vm.eval(self.allocator, bytecodes_a, float_x, float_y);
-                if (bytecodes_b.x and bytecodes_b.y) b = try self.bytecode_vm.eval(self.allocator, bytecodes_b, float_x, float_y);
+            // const y: isize = @intFromFloat(float_y / self.scale + self.origin.y);
+            // if (0 < y and y < self.height) {
+            //     self.data[@as(usize, @intCast(y)) * self.width + x] = 255;
+            // }
+        }
+    }
 
-                if (@abs(a - b) < epsilon) {
-                    self.data[y * self.width + x] = 255;
-                }
+    pub fn plotXY(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+        var v = if (!bytecodes.x and !bytecodes.y) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
+
+        for (0..self.width) |x| {
+            const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
+            if (bytecodes.x and !bytecodes.y) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
+
+            for (0..self.height) |y| {
+                const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
+                if (bytecodes.y) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
+
+                self.data[y * self.width + x] +%= @intFromFloat(255 * v);
             }
         }
     }

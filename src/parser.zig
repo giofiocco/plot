@@ -5,12 +5,17 @@ const defs = @import("defs.zig");
 const Loc = defs.Loc;
 const printError = defs.printError;
 
+const canvas_mod = @import("canvas.zig");
+const Operator = canvas_mod.Operator;
+const Variable = canvas_mod.Variable;
+
 pub const Expr = struct {
     loc: Loc,
     expr: union(enum) {
         sym: []const u8,
         num: f64,
-        op: std.ArrayList(*Expr),
+        op: Operator,
+        app: std.ArrayList(*Expr),
         def: struct { name: []const u8, expr: *Expr },
         plot: *Expr,
     },
@@ -28,10 +33,11 @@ pub const Expr = struct {
         switch (self.expr) {
             .sym => |sym| ptr.expr = .{ .sym = try allocator.dupe(u8, sym) },
             .num => |n| ptr.expr = .{ .num = n },
-            .op => |args| {
-                ptr.expr = .{ .op = .empty };
+            .op => |op| ptr.expr = .{ .op = op },
+            .app => |args| {
+                ptr.expr = .{ .app = .empty };
                 for (args.items) |e| {
-                    try ptr.expr.op.append(allocator, try e.deep_clone(allocator));
+                    try ptr.expr.app.append(allocator, try e.deep_clone(allocator));
                 }
             },
             .def => |def| ptr.expr = .{ .def = .{
@@ -44,15 +50,36 @@ pub const Expr = struct {
         return ptr;
     }
 
+    pub fn deep_free(self: *Expr, allocator: std.mem.Allocator) void {
+        switch (self.expr) {
+            .sym => |sym| allocator.free(sym),
+            .num => {},
+            .op => {},
+            .app => |app| {
+                for (app.items) |e| {
+                    e.free(allocator);
+                }
+                self.expr.app.deinit(allocator);
+            },
+            .def => |def| {
+                allocator.free(def.name);
+                def.expr.free(allocator);
+            },
+            .plot => |plot| plot.free(allocator),
+        }
+        allocator.destroy(self);
+    }
+
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
             .sym => {},
             .num => {},
-            .op => {
-                for (self.expr.op.items) |e| {
+            .op => {},
+            .app => {
+                for (self.expr.app.items) |e| {
                     e.free(allocator);
                 }
-                self.expr.op.deinit(allocator);
+                self.expr.app.deinit(allocator);
             },
             .def => self.expr.def.expr.free(allocator),
             .plot => self.expr.plot.free(allocator),
@@ -64,9 +91,10 @@ pub const Expr = struct {
         switch (self.expr) {
             .sym => |sym| try w.print("{s}", .{sym}),
             .num => |n| try w.print("{}", .{n}),
-            .op => |op| {
+            .op => |op| try w.print("{s}", .{op.toString()}),
+            .app => |app| {
                 try w.print("(", .{});
-                for (op.items, 0..) |e, i| {
+                for (app.items, 0..) |e, i| {
                     if (i > 0) try w.print(" ", .{});
                     try w.print("{f}", .{e});
                 }
@@ -83,6 +111,7 @@ const Token = struct {
     token: union(enum) {
         sym: []const u8,
         num: f64,
+        op: Operator,
         open,
         close,
         def,
@@ -177,6 +206,13 @@ const Tokenizer = struct {
                 } else if (isSym(c)) {
                     var i: usize = 1;
                     while (i < self.buffer.len and isSym(self.buffer[i])) i += 1;
+
+                    inline for (std.meta.fields(Operator)) |op| {
+                        if (std.mem.eql(u8, self.buffer[0..i], (@as(Operator, @enumFromInt(op.value))).toString())) {
+                            return self.consume(i, .{ .op = @enumFromInt(op.value) });
+                        }
+                    }
+
                     return self.consume(i, .{ .sym = self.buffer[0..i] });
                 } else {
                     if (self.logerror) printError(self.loc, "invalid char '{c}'", .{c});
@@ -246,6 +282,10 @@ pub const Parser = struct {
                 _ = try self.tok.next();
                 return (Expr{ .loc = token.loc, .expr = .{ .num = n } }).alloc(self.allocator);
             },
+            .op => |op| {
+                _ = try self.tok.next();
+                return (Expr{ .loc = token.loc, .expr = .{ .op = op } }).alloc(self.allocator);
+            },
             .open => {
                 _ = try self.tok.next();
                 if (try self.tok.next_if_kind(.def)) |_| {
@@ -281,7 +321,7 @@ pub const Parser = struct {
 
                     const end_loc = (try self.tok.expect(.close)).loc;
 
-                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .op = args } }).alloc(self.allocator);
+                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .app = args } }).alloc(self.allocator);
                 }
             },
             .close, .def, .plot => {
@@ -303,7 +343,7 @@ test "tokenizer-comment" {
     const buffer: []const u8 = "# 2\n3";
     var tok = Tokenizer.init(buffer, "test", false);
     const token = (try tok.next()).?.token;
-    try expect(token == .int and token.int == 3);
+    try expect(token.num == 3);
 }
 
 test "tokenizer" {
@@ -313,9 +353,9 @@ test "tokenizer" {
     try expect((try tok.next()).?.token == .def);
     try expect((try tok.next()).?.token == .sym);
     try expect((try tok.next()).?.token == .open);
+    try expect((try tok.next()).?.token.op == .pow);
     try expect((try tok.next()).?.token == .sym);
-    try expect((try tok.next()).?.token == .sym);
-    try expect((try tok.next()).?.token == .int);
+    try expect((try tok.next()).?.token.num == 2);
     try expect((try tok.next()).?.token == .close);
     try expect((try tok.next()).?.token == .close);
     try expect(try tok.next() == null);
@@ -339,16 +379,16 @@ test "parser-def-dont-leak" {
     try expect(par.next() == ParserError.UnexpectedToken);
 }
 
-test "parser-op" {
+test "parser-app" {
     var par = Parser.init("(^ 2 x)", "test", std.testing.allocator, false);
     const expr = (try par.next()).?;
     defer expr.free(std.testing.allocator);
-    try expect(std.mem.eql(u8, expr.expr.op.items[0].expr.sym, "^"));
-    try expect(expr.expr.op.items[1].expr.int == 2);
-    try expect(std.mem.eql(u8, expr.expr.op.items[2].expr.sym, "x"));
+    try expect(expr.expr.app.items[0].expr.op == .pow);
+    try expect(expr.expr.app.items[1].expr.num == 2);
+    try expect(std.mem.eql(u8, expr.expr.app.items[2].expr.sym, "x"));
 }
 
-test "parser-op-dont-leak" {
+test "parser-app-dont-leak" {
     var par = Parser.init("(+ 1 2 3", "test", std.testing.allocator, false);
     try expect(par.next() == ParserError.UnexpectedEOF);
 }
