@@ -195,29 +195,7 @@ pub const Canvas = struct {
         self.bytecode_vm.deinit(self.allocator);
     }
 
-    pub fn plotX(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
-        assert(!bytecodes.y);
-
-        var v = if (!bytecodes.x) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
-
-        for (0..self.width) |x| {
-            const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
-            if (bytecodes.x) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
-
-            for (0..self.height) |y| {
-                const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
-                const color = std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1);
-                self.data[y * self.width + x] +%= @intFromFloat(255 * color);
-            }
-
-            // const y: isize = @intFromFloat(float_y / self.scale + self.origin.y);
-            // if (0 < y and y < self.height) {
-            //     self.data[@as(usize, @intCast(y)) * self.width + x] = 255;
-            // }
-        }
-    }
-
-    pub fn plotXY(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+    pub fn plot(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
         var v = if (!bytecodes.x and !bytecodes.y) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
 
         for (0..self.width) |x| {
@@ -226,9 +204,19 @@ pub const Canvas = struct {
 
             for (0..self.height) |y| {
                 const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
-                if (bytecodes.y) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
+                if (bytecodes.y)
+                    v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
 
-                self.data[y * self.width + x] +%= @intFromFloat(255 * v);
+                const color = if (bytecodes.x and bytecodes.y)
+                    v
+                else if (bytecodes.x)
+                    std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1)
+                else if (bytecodes.y)
+                    std.math.clamp(1 - 50 * @abs(v - float_x), 0, 1)
+                else
+                    std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1);
+
+                self.data[y * self.width + x] +%= @intFromFloat(255 * color);
             }
         }
     }

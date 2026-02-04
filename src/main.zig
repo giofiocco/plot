@@ -100,13 +100,7 @@ const State = struct {
                 try self.eval(plot, &code);
                 defer code.deinit(self.allocator);
 
-                if (code.x and code.y) {
-                    try self.canvas.plotXY(code);
-                } else if (code.x) {
-                    try self.canvas.plotX(code);
-                } else {
-                    @panic("TODO plot y");
-                }
+                try self.canvas.plot(code);
 
                 self.canvas.saveToFile("x2.png");
             },
