@@ -207,16 +207,15 @@ pub const Canvas = struct {
                 if (bytecodes.y)
                     v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
 
-                const color = if (bytecodes.x and bytecodes.y)
-                    v
-                else if (bytecodes.x)
-                    std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1)
-                else if (bytecodes.y)
-                    std.math.clamp(1 - 50 * @abs(v - float_x), 0, 1)
-                else
-                    std.math.clamp(1 - 50 * @abs(v - float_y), 0, 1);
+                const color =
+                    if (bytecodes.x and bytecodes.y)
+                        v
+                    else if (bytecodes.y)
+                        1 - 50 * @abs(v - float_x)
+                    else
+                        1 - 50 * @abs(v - float_y);
 
-                self.data[y * self.width + x] +%= @intFromFloat(255 * color);
+                self.data[y * self.width + x] +%= @intFromFloat(255 * std.math.clamp(color, 0, 1));
             }
         }
     }

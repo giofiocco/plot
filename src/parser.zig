@@ -54,10 +54,8 @@ pub const Expr = struct {
 
     pub fn deep_free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
+            .num, .op, .variable => {},
             .sym => |sym| allocator.free(sym),
-            .num => {},
-            .op => {},
-            .variable => {},
             .app => |app| {
                 for (app.items) |e| {
                     e.deep_free(allocator);
@@ -75,10 +73,7 @@ pub const Expr = struct {
 
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
-            .sym => {},
-            .num => {},
-            .op => {},
-            .variable => {},
+            .sym, .num, .op, .variable => {},
             .app => {
                 for (self.expr.app.items) |e| {
                     e.free(allocator);
@@ -95,8 +90,8 @@ pub const Expr = struct {
         switch (self.expr) {
             .sym => |sym| try w.print("{s}", .{sym}),
             .num => |n| try w.print("{}", .{n}),
-            .op => |op| try w.print("{}", .{op}),
-            .variable => |v| try w.print("{}", .{v}),
+            .op => |op| try w.print("{s}", .{op.toString()}),
+            .variable => |v| try w.print("{s}", .{@tagName(v)}),
             .app => |app| {
                 try w.print("(", .{});
                 for (app.items, 0..) |e, i| {

@@ -27,6 +27,7 @@ const State = struct {
     canvas: Canvas,
     allocator: std.mem.Allocator,
     logerror: bool,
+    logtime: bool,
 
     const Error = error{
         Undefined,
@@ -34,12 +35,13 @@ const State = struct {
         Invalid,
     } || canvasmod.BytecodeVM.Error || std.mem.Allocator.Error;
 
-    fn init(allocator: std.mem.Allocator, logerror: bool) std.mem.Allocator.Error!State {
+    fn init(allocator: std.mem.Allocator, logerror: bool, logtime: bool) std.mem.Allocator.Error!State {
         return .{
             .vars = .init(allocator),
             .canvas = try .init(allocator, 500, 500, 0.01, .{ .anchor = .center }),
             .allocator = allocator,
             .logerror = logerror,
+            .logtime = logtime,
         };
     }
 
@@ -48,7 +50,6 @@ const State = struct {
         while (iter.next()) |entry| {
             entry.value_ptr.*.deep_free(self.allocator);
         }
-
         self.vars.deinit();
         self.canvas.deinit();
     }
@@ -71,12 +72,17 @@ const State = struct {
             .variable => |v| try bytecodes.append(self.allocator, .{ .variable = v }),
             .app => |app| {
                 if (app.items[0].expr == .op) {
+                    const op = app.items[0].expr.op;
+                    if (app.items.len != op.argNumber() + 1) {
+                        if (self.logerror) printError(expr.loc, "missing op args, expected {}, found {}", .{ op.argNumber(), app.items.len - 1 });
+                        return canvasmod.BytecodeVM.Error.MissingOpArgs;
+                    }
                     for (app.items[1..]) |e| {
                         try self.compile(e, bytecodes);
                     }
-                    try bytecodes.append(self.allocator, .{ .op = app.items[0].expr.op });
+                    try bytecodes.append(self.allocator, .{ .op = op });
                 } else {
-                    @panic("TODO: unimplemented");
+                    unreachable;
                 }
             },
         }
@@ -97,11 +103,26 @@ const State = struct {
                 }
             },
             .plot => |plot| {
-                var code = BytecodeList.empty;
-                try self.compile(plot, &code);
-                defer code.deinit(self.allocator);
+                var start = std.time.nanoTimestamp();
 
-                try self.canvas.plot(code);
+                var bytecodes = BytecodeList.empty;
+                try self.compile(plot, &bytecodes);
+                defer bytecodes.deinit(self.allocator);
+
+                if (self.logtime) {
+                    const now = std.time.nanoTimestamp();
+                    std.debug.print("compiling time: {d:.3} ms, ", .{@as(f64, @floatFromInt(now - start)) * 1e-6});
+                    start = now;
+                }
+
+                std.debug.print("{any}\n", .{bytecodes.items.items});
+
+                try self.canvas.plot(bytecodes);
+
+                if (self.logtime) {
+                    const now = std.time.nanoTimestamp();
+                    std.debug.print("plotting time: {d:.3} ms\n", .{@as(f64, @floatFromInt(now - start)) * 1e-6});
+                }
 
                 self.canvas.saveToFile("x2.png");
             },
@@ -127,7 +148,7 @@ pub fn main() !void {
     const content = try std.fs.cwd().readFileAlloc(allocator, filename, std.math.maxInt(usize));
     defer allocator.free(content);
 
-    var state = try State.init(allocator, true);
+    var state = try State.init(allocator, true, true);
     defer state.deinit();
 
     var par = Parser.init(content, filename, allocator, true);
