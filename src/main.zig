@@ -28,7 +28,11 @@ const State = struct {
     allocator: std.mem.Allocator,
     logerror: bool,
 
-    const Error = error{Redefinition} || canvasmod.BytecodeVM.Error || std.mem.Allocator.Error;
+    const Error = error{
+        Undefined,
+        Redefinition,
+        Invalid,
+    } || canvasmod.BytecodeVM.Error || std.mem.Allocator.Error;
 
     fn init(allocator: std.mem.Allocator, logerror: bool) std.mem.Allocator.Error!State {
         return .{
@@ -41,8 +45,6 @@ const State = struct {
 
     fn deinit(self: *State) void {
         var iter = self.vars.iterator();
-        // TODO: leak of (def f ...)
-        // TODO: token variable and operations
         while (iter.next()) |entry| {
             entry.value_ptr.*.deep_free(self.allocator);
         }
@@ -51,41 +53,42 @@ const State = struct {
         self.canvas.deinit();
     }
 
-    // TODO: error if null
-    fn eval(self: *State, expr: *Expr, bytecodes: ?*BytecodeList) State.Error!void {
+    fn compile(self: *State, expr: *Expr, bytecodes: *BytecodeList) State.Error!void {
         switch (expr.expr) {
-            .sym => |str| {
-                if (self.vars.get(str)) |e| {
-                    try self.eval(e, bytecodes);
+            .op, .def, .plot => {
+                printError(expr.loc, "invalid expression to compile", .{});
+                return State.Error.Invalid;
+            },
+            .sym => |sym| {
+                if (self.vars.get(sym)) |e| {
+                    try self.compile(e, bytecodes);
                 } else {
-                    inline for (std.meta.fields(Variable)) |v| {
-                        if (std.mem.eql(u8, str, v.name)) {
-                            try bytecodes.?.append(self.allocator, .{ .variable = @enumFromInt(v.value) });
-                            break;
-                        }
-                    } else {
-                        @panic("todo");
-                    }
+                    if (self.logerror) printError(expr.loc, "undefined symbol", .{});
+                    return State.Error.Undefined;
                 }
             },
-            .num => |n| try bytecodes.?.append(self.allocator, .{ .num = n }),
-            .op => @panic("todo"),
+            .num => |n| try bytecodes.append(self.allocator, .{ .num = n }),
+            .variable => |v| try bytecodes.append(self.allocator, .{ .variable = v }),
             .app => |app| {
-                assert(app.items[0].expr == .op);
-
                 if (app.items[0].expr == .op) {
-                    const n = app.items[0].expr.op.argNumber();
-                    if (app.items.len != n + 1) @panic("TODO: throw error");
                     for (app.items[1..]) |e| {
-                        try self.eval(e, bytecodes);
+                        try self.compile(e, bytecodes);
                     }
-                    try bytecodes.?.append(self.allocator, .{ .op = app.items[0].expr.op });
+                    try bytecodes.append(self.allocator, .{ .op = app.items[0].expr.op });
                 } else {
-                    @panic("todo");
+                    @panic("TODO: unimplemented");
                 }
+            },
+        }
+    }
+
+    fn eval(self: *State, expr: *Expr) State.Error!void {
+        switch (expr.expr) {
+            .sym, .num, .op, .variable, .app => {
+                printError(expr.loc, "invalid expression to eval", .{});
+                return State.Error.Invalid;
             },
             .def => {
-                assert(bytecodes == null);
                 if (self.vars.get(expr.expr.def.name)) |_| {
                     printError(expr.loc, "redefinition", .{});
                     return State.Error.Redefinition;
@@ -94,10 +97,8 @@ const State = struct {
                 }
             },
             .plot => |plot| {
-                assert(bytecodes == null);
-
                 var code = BytecodeList.empty;
-                try self.eval(plot, &code);
+                try self.compile(plot, &code);
                 defer code.deinit(self.allocator);
 
                 try self.canvas.plot(code);
@@ -133,23 +134,7 @@ pub fn main() !void {
 
     while (try par.next()) |expr| {
         std.debug.print("{f}\n", .{expr});
-        try state.eval(expr, null);
+        state.eval(expr) catch {};
         expr.free(allocator);
     }
-
-    // var canvas = try Canvas.init(allocator, 100, 100, 0.05, .{ .anchor = .center });
-    // defer canvas.deinit();
-    //
-    // const bc: []canvasmod.Bytecode = @constCast(&[_]canvasmod.Bytecode{
-    //     .{ .num = 1 },
-    //     .{ .variable = .x },
-    //     .{ .num = 2 },
-    //     .{ .op = .pow },
-    //     .{ .op = .sub },
-    //     .{ .num = 0.5 },
-    //     .{ .op = .pow },
-    // });
-    // try canvas.plot(bc);
-    //
-    // canvas.saveToFile("x2.png");
 }

@@ -6,9 +6,9 @@ pub const Loc = struct {
     col: usize,
     line: []const u8, // the whole line for error report
     len: usize, // len of the underline for error report
-    filename: []const u8, // TODO: optional
+    filename: ?[]const u8,
 
-    pub fn init(buffer: []const u8, filename: []const u8) Loc {
+    pub fn init(buffer: []const u8, filename: ?[]const u8) Loc {
         var newline: usize = 0;
         while (newline < buffer.len and buffer[newline] != '\n') newline += 1;
         return .{
@@ -21,7 +21,9 @@ pub const Loc = struct {
     }
 
     pub fn extend(self: Loc, other: Loc) Loc {
-        assert(std.mem.eql(u8, self.filename, other.filename));
+        if (self.filename != null and other.filename != null) {
+            assert(std.mem.eql(u8, self.filename.?, other.filename.?));
+        }
         assert(self.row <= other.row);
         assert(self.col <= other.col);
 
@@ -36,7 +38,8 @@ pub const Loc = struct {
 };
 
 pub fn printError(loc: Loc, comptime fmt: [:0]const u8, args: anytype) void {
-    std.debug.print("{s}:{}:{}: ERROR: ", .{ loc.filename, loc.row, loc.col });
+    if (loc.filename) |filename| std.debug.print("{s}:", .{filename});
+    std.debug.print("{}:{}: ERROR: ", .{ loc.row, loc.col });
     std.debug.print(fmt, args);
     std.debug.print("\n", .{});
     std.debug.print("{:5} | {s}\n", .{ loc.row, loc.line });

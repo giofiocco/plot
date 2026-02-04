@@ -15,6 +15,7 @@ pub const Expr = struct {
         sym: []const u8,
         num: f64,
         op: Operator,
+        variable: Variable,
         app: std.ArrayList(*Expr),
         def: struct { name: []const u8, expr: *Expr },
         plot: *Expr,
@@ -34,6 +35,7 @@ pub const Expr = struct {
             .sym => |sym| ptr.expr = .{ .sym = try allocator.dupe(u8, sym) },
             .num => |n| ptr.expr = .{ .num = n },
             .op => |op| ptr.expr = .{ .op = op },
+            .variable => |v| ptr.expr = .{ .variable = v },
             .app => |args| {
                 ptr.expr = .{ .app = .empty };
                 for (args.items) |e| {
@@ -55,17 +57,18 @@ pub const Expr = struct {
             .sym => |sym| allocator.free(sym),
             .num => {},
             .op => {},
+            .variable => {},
             .app => |app| {
                 for (app.items) |e| {
-                    e.free(allocator);
+                    e.deep_free(allocator);
                 }
                 self.expr.app.deinit(allocator);
             },
             .def => |def| {
                 allocator.free(def.name);
-                def.expr.free(allocator);
+                def.expr.deep_free(allocator);
             },
-            .plot => |plot| plot.free(allocator),
+            .plot => |plot| plot.deep_free(allocator),
         }
         allocator.destroy(self);
     }
@@ -75,6 +78,7 @@ pub const Expr = struct {
             .sym => {},
             .num => {},
             .op => {},
+            .variable => {},
             .app => {
                 for (self.expr.app.items) |e| {
                     e.free(allocator);
@@ -91,7 +95,8 @@ pub const Expr = struct {
         switch (self.expr) {
             .sym => |sym| try w.print("{s}", .{sym}),
             .num => |n| try w.print("{}", .{n}),
-            .op => |op| try w.print("{s}", .{op.toString()}),
+            .op => |op| try w.print("{}", .{op}),
+            .variable => |v| try w.print("{}", .{v}),
             .app => |app| {
                 try w.print("(", .{});
                 for (app.items, 0..) |e, i| {
@@ -112,6 +117,7 @@ const Token = struct {
         sym: []const u8,
         num: f64,
         op: Operator,
+        variable: Variable,
         open,
         close,
         def,
@@ -120,13 +126,6 @@ const Token = struct {
 };
 
 const TokenKind = std.meta.Tag(@FieldType(Token, "token"));
-
-// TODO: put it in Parser.Error
-const ParserError = error{
-    InvalidChar,
-    UnexpectedToken,
-    UnexpectedEOF,
-} || std.mem.Allocator.Error || std.fmt.ParseIntError;
 
 const Tokenizer = struct {
     buffer: []const u8,
@@ -156,7 +155,7 @@ const Tokenizer = struct {
         return .{ .loc = loc, .token = t };
     }
 
-    fn next(self: *Tokenizer) ParserError!?Token {
+    fn next(self: *Tokenizer) Parser.Error!?Token {
         if (self.last) |last| {
             self.last = null;
             return last;
@@ -213,16 +212,22 @@ const Tokenizer = struct {
                         }
                     }
 
+                    inline for (std.meta.fields(Variable)) |v| {
+                        if (std.mem.eql(u8, self.buffer[0..i], v.name)) {
+                            return self.consume(i, .{ .variable = @enumFromInt(v.value) });
+                        }
+                    }
+
                     return self.consume(i, .{ .sym = self.buffer[0..i] });
                 } else {
                     if (self.logerror) printError(self.loc, "invalid char '{c}'", .{c});
-                    return ParserError.InvalidChar;
+                    return Parser.Error.InvalidChar;
                 }
             },
         }
     }
 
-    fn peek(self: *Tokenizer) ParserError!?Token {
+    fn peek(self: *Tokenizer) Parser.Error!?Token {
         if (self.last) |last| {
             return last;
         } else {
@@ -231,7 +236,7 @@ const Tokenizer = struct {
         }
     }
 
-    fn expect(self: *Tokenizer, kind: TokenKind) ParserError!Token {
+    fn expect(self: *Tokenizer, kind: TokenKind) Parser.Error!Token {
         var loc = self.loc;
         if (try self.next()) |token| {
             if (token.token == kind) {
@@ -240,10 +245,10 @@ const Tokenizer = struct {
             loc = token.loc;
         }
         if (self.logerror) printError(loc, "unexpected token, expected {}", .{kind});
-        return ParserError.UnexpectedToken;
+        return Parser.Error.UnexpectedToken;
     }
 
-    fn next_if_kind(self: *Tokenizer, kind: TokenKind) ParserError!?Token {
+    fn next_if_kind(self: *Tokenizer, kind: TokenKind) Parser.Error!?Token {
         if (try self.peek()) |token| {
             if (token.token == kind) {
                 _ = try self.next();
@@ -259,6 +264,12 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     logerror: bool,
 
+    const Error = error{
+        InvalidChar,
+        UnexpectedToken,
+        UnexpectedEOF,
+    } || std.mem.Allocator.Error || std.fmt.ParseIntError;
+
     pub fn init(buffer: []const u8, filename: []const u8, allocator: std.mem.Allocator, logerror: bool) Parser {
         return .{
             .tok = .init(buffer, filename, logerror),
@@ -267,10 +278,10 @@ pub const Parser = struct {
         };
     }
 
-    fn next_expect(self: *Parser) ParserError!*Expr {
+    fn next_expect(self: *Parser) Parser.Error!*Expr {
         const token = (try self.tok.peek()) orelse {
             if (self.logerror) printError(self.tok.loc, "unexpected EOF", .{});
-            return ParserError.UnexpectedEOF;
+            return Parser.Error.UnexpectedEOF;
         };
 
         switch (token.token) {
@@ -285,6 +296,10 @@ pub const Parser = struct {
             .op => |op| {
                 _ = try self.tok.next();
                 return (Expr{ .loc = token.loc, .expr = .{ .op = op } }).alloc(self.allocator);
+            },
+            .variable => |v| {
+                _ = try self.tok.next();
+                return (Expr{ .loc = token.loc, .expr = .{ .variable = v } }).alloc(self.allocator);
             },
             .open => {
                 _ = try self.tok.next();
@@ -314,7 +329,7 @@ pub const Parser = struct {
                     try args.append(self.allocator, try self.next_expect());
                     while (((try self.tok.peek()) orelse {
                         if (self.logerror) printError(self.tok.loc, "unexpected EOF", .{});
-                        return ParserError.UnexpectedEOF;
+                        return Parser.Error.UnexpectedEOF;
                     }).token != .close) {
                         try args.append(self.allocator, try self.next_expect());
                     }
@@ -326,12 +341,12 @@ pub const Parser = struct {
             },
             .close, .def, .plot => {
                 if (self.logerror) printError(token.loc, "unexpected token", .{});
-                return ParserError.UnexpectedToken;
+                return Parser.Error.UnexpectedToken;
             },
         }
     }
 
-    pub fn next(self: *Parser) ParserError!?*Expr {
+    pub fn next(self: *Parser) Parser.Error!?*Expr {
         if (try self.tok.peek() == null) return null;
         return try self.next_expect();
     }
@@ -363,7 +378,7 @@ test "tokenizer" {
 
 test "unexpected-token" {
     var par = Parser.init("def", "test", std.testing.allocator, false);
-    try expect(par.next() == ParserError.UnexpectedToken);
+    try expect(par.next() == Parser.Error.UnexpectedToken);
 }
 
 test "parser-def" {
@@ -376,7 +391,7 @@ test "parser-def" {
 
 test "parser-def-dont-leak" {
     var par = Parser.init("(def f x", "test", std.testing.allocator, false);
-    try expect(par.next() == ParserError.UnexpectedToken);
+    try expect(par.next() == Parser.Error.UnexpectedToken);
 }
 
 test "parser-app" {
@@ -390,5 +405,5 @@ test "parser-app" {
 
 test "parser-app-dont-leak" {
     var par = Parser.init("(+ 1 2 3", "test", std.testing.allocator, false);
-    try expect(par.next() == ParserError.UnexpectedEOF);
+    try expect(par.next() == Parser.Error.UnexpectedEOF);
 }
