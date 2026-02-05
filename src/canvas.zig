@@ -195,7 +195,42 @@ pub const Canvas = struct {
         self.bytecode_vm.deinit(self.allocator);
     }
 
-    pub fn plot(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+    // TODO: maybe merge plotX and plotY
+    pub fn plotX(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+        assert(!bytecodes.y);
+
+        var v = if (!bytecodes.x) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
+
+        for (0..self.width) |x| {
+            const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
+            if (bytecodes.x) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, 0);
+
+            for (0..self.height) |y| {
+                const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
+                const color = 0.002 / @abs(v - float_y);
+                self.data[y * self.width + x] +%= @intFromFloat(255 * std.math.clamp(color, 0, 1));
+            }
+        }
+    }
+
+    pub fn plotY(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
+        assert(!bytecodes.x);
+
+        var v = if (!bytecodes.y) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
+
+        for (0..self.height) |y| {
+            const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
+            if (bytecodes.y) v = try self.bytecode_vm.eval(self.allocator, bytecodes, 0, float_y);
+
+            for (0..self.width) |x| {
+                const float_x: f64 = (@as(f64, @floatFromInt(x)) - self.origin.x) * self.scale;
+                const color = 0.002 / @abs(v - float_x);
+                self.data[y * self.width + x] +%= @intFromFloat(255 * std.math.clamp(color, 0, 1));
+            }
+        }
+    }
+
+    pub fn plotXY(self: *Canvas, bytecodes: BytecodeList) BytecodeVM.Error!void {
         var v = if (!bytecodes.x and !bytecodes.y) try self.bytecode_vm.eval(self.allocator, bytecodes, 0, 0) else 0;
 
         for (0..self.width) |x| {
@@ -204,17 +239,8 @@ pub const Canvas = struct {
 
             for (0..self.height) |y| {
                 const float_y: f64 = (@as(f64, @floatFromInt(y)) - self.origin.y) * self.scale;
-                if (bytecodes.y)
-                    v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
-
-                const color =
-                    if (bytecodes.x and bytecodes.y)
-                        v
-                    else if (bytecodes.y)
-                        1 - 50 * @abs(v - float_x)
-                    else
-                        1 - 50 * @abs(v - float_y);
-
+                if (bytecodes.y) v = try self.bytecode_vm.eval(self.allocator, bytecodes, float_x, float_y);
+                const color = v;
                 self.data[y * self.width + x] +%= @intFromFloat(255 * std.math.clamp(color, 0, 1));
             }
         }

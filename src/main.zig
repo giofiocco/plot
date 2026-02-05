@@ -117,7 +117,17 @@ const State = struct {
 
                 std.debug.print("{any}\n", .{bytecodes.items.items});
 
-                try self.canvas.plot(bytecodes);
+                if ((bytecodes.x and bytecodes.y) or
+                    (plot.expr == .app and
+                        plot.expr.app.items[0].expr == .op and
+                        (plot.expr.app.items[0].expr.op == .eq or plot.expr.app.items[0].expr.op == .lt)))
+                {
+                    try self.canvas.plotXY(bytecodes);
+                } else if (bytecodes.x) {
+                    try self.canvas.plotX(bytecodes);
+                } else if (bytecodes.x) {
+                    try self.canvas.plotY(bytecodes);
+                }
 
                 if (self.logtime) {
                     const now = std.time.nanoTimestamp();
