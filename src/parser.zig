@@ -12,83 +12,98 @@ const Variable = canvas_mod.Variable;
 pub const Expr = struct {
     loc: Loc,
     expr: union(enum) {
-        sym: []const u8,
-        num: f64,
+        sym: struct { sym: []const u8, resolve: ?*Expr },
+        num: f32,
         op: Operator,
         variable: Variable,
         app: std.ArrayList(*Expr),
         def: struct { name: []const u8, expr: *Expr },
         plot: *Expr,
     },
+    value: ?f32,
+    outkind: enum(u3) { x, y, bool },
+    lastx: f32,
+    lasty: f32,
+    x: bool,
+    y: bool,
 
-    fn alloc(self: Expr, allocator: std.mem.Allocator) !*Expr {
+    const epsilon = 0.001;
+
+    fn init(allocator: std.mem.Allocator, loc: Loc, expr: @FieldType(Expr, "expr")) std.mem.Allocator.Error!*Expr {
         const ptr = try allocator.create(Expr);
-        ptr.* = self;
-        return ptr;
-    }
-
-    pub fn deep_clone(self: *Expr, allocator: std.mem.Allocator) !*Expr {
-        const ptr = try allocator.create(Expr);
-        ptr.loc = self.loc;
-
-        switch (self.expr) {
-            .sym => |sym| ptr.expr = .{ .sym = try allocator.dupe(u8, sym) },
-            .num => |n| ptr.expr = .{ .num = n },
-            .op => |op| ptr.expr = .{ .op = op },
-            .variable => |v| ptr.expr = .{ .variable = v },
-            .app => |args| {
-                ptr.expr = .{ .app = .empty };
-                for (args.items) |e| {
-                    try ptr.expr.app.append(allocator, try e.deep_clone(allocator));
-                }
+        ptr.* = .{
+            .loc = loc,
+            .expr = expr,
+            .value = null,
+            .outkind = .y,
+            .lastx = 0,
+            .lasty = 0,
+            .x = false,
+            .y = false,
+        };
+        switch (expr) {
+            .sym, .op, .def, .plot => {},
+            .num => |n| ptr.value = n,
+            .variable => |v| switch (v) {
+                .x => ptr.x = true,
+                .y => ptr.y = true,
             },
-            .def => |def| ptr.expr = .{ .def = .{
-                .name = try allocator.dupe(u8, def.name),
-                .expr = try def.expr.deep_clone(allocator),
-            } },
-            .plot => |plot| ptr.expr = .{ .plot = try plot.deep_clone(allocator) },
-        }
-
-        return ptr;
-    }
-
-    pub fn deep_free(self: *Expr, allocator: std.mem.Allocator) void {
-        switch (self.expr) {
-            .num, .op, .variable => {},
-            .sym => |sym| allocator.free(sym),
             .app => |app| {
                 for (app.items) |e| {
-                    e.deep_free(allocator);
+                    ptr.x |= e.x;
+                    ptr.y |= e.y;
+                    if (e.outkind == .bool) ptr.outkind = .bool;
                 }
-                self.expr.app.deinit(allocator);
+
+                if (app.items[0].expr == .op and app.items[0].expr.op.isOutBool()) {
+                    ptr.outkind = .bool;
+                }
+            },
+        }
+        if (ptr.outkind != .bool and ptr.y) ptr.outkind = .x;
+        return ptr;
+    }
+
+    pub fn clone(self: Expr, allocator: std.mem.Allocator) std.mem.Allocator.Error!*Expr {
+        const ptr = try allocator.create(Expr);
+        ptr.* = self;
+
+        switch (self.expr) {
+            .num, .op, .variable => {},
+            .sym => |s| ptr.expr.sym.sym = try allocator.dupe(u8, s.sym),
+            .app => |app| {
+                ptr.expr.app = try .initCapacity(allocator, app.capacity);
+                for (app.items) |e| {
+                    ptr.expr.app.appendAssumeCapacity(try e.clone(allocator));
+                }
             },
             .def => |def| {
-                allocator.free(def.name);
-                def.expr.deep_free(allocator);
+                ptr.expr.def.name = try allocator.dupe(u8, def.name);
+                ptr.expr.def.expr = try def.expr.clone(allocator);
             },
-            .plot => |plot| plot.deep_free(allocator),
+            .plot => |e| ptr.expr.plot = try e.clone(allocator),
         }
-        allocator.destroy(self);
+
+        return ptr;
     }
 
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
-            .sym, .num, .op, .variable => {},
-            .app => {
-                for (self.expr.app.items) |e| {
-                    e.free(allocator);
-                }
+            .num, .op, .variable => {},
+            .sym => |s| allocator.free(s.sym),
+            .app => |app| {
+                for (app.items) |e| e.free(allocator);
                 self.expr.app.deinit(allocator);
             },
-            .def => self.expr.def.expr.free(allocator),
-            .plot => self.expr.plot.free(allocator),
+            .def => |def| def.expr.free(allocator),
+            .plot => |e| e.free(allocator),
         }
         allocator.destroy(self);
     }
 
     pub fn format(self: Expr, w: *std.Io.Writer) !void {
         switch (self.expr) {
-            .sym => |sym| try w.print("{s}", .{sym}),
+            .sym => |s| try w.print("{s}", .{s.sym}),
             .num => |n| try w.print("{}", .{n}),
             .op => |op| try w.print("{s}", .{op.toString()}),
             .variable => |v| try w.print("{s}", .{@tagName(v)}),
@@ -104,13 +119,58 @@ pub const Expr = struct {
             .plot => |plot| try w.print("(plot {f})", .{plot}),
         }
     }
+
+    pub fn eval(self: *Expr, x: f32, y: f32) bool {
+        if (self.value == null or
+            (self.x and @abs(self.lastx - x) > epsilon) or
+            (self.y and @abs(self.lasty - y) > epsilon))
+        {
+            switch (self.expr) {
+                .sym => |s| {
+                    _ = s.resolve.?.eval(x, y);
+                    self.value = s.resolve.?.value;
+                },
+                .num => |n| self.value = n,
+                .variable => |v| switch (v) {
+                    .x => self.value = x,
+                    .y => self.value = y,
+                },
+                .app => |app| {
+                    if (app.items[0].expr == .op) {
+                        for (app.items[1..]) |e| {
+                            _ = e.eval(x, y);
+                        }
+
+                        self.value = switch (app.items[0].expr.op) {
+                            .pow => std.math.pow(f32, app.items[2].value.?, app.items[1].value.?),
+                            .sin => std.math.sin(app.items[1].value.?),
+                            .sub => app.items[1].value.? - app.items[2].value.?,
+                            .sum => app.items[1].value.? + app.items[2].value.?,
+                            .mul => app.items[1].value.? * app.items[2].value.?,
+                            .eq => std.math.clamp(1 - 30 * @abs(app.items[1].value.? - app.items[2].value.?), 0, 1),
+                            .lt => std.math.clamp(1 - 30 * (app.items[1].value.? - app.items[2].value.?), 0, 1),
+                            .et => app.items[1].value.? * app.items[2].value.?,
+                        };
+                    }
+                },
+                .op => unreachable, // TODO: error
+                .def => unreachable, // TODO: error
+                .plot => unreachable, // TODO: error
+            }
+
+            self.lastx = x;
+            self.lasty = y;
+            return true;
+        }
+        return false;
+    }
 };
 
 const Token = struct {
     loc: Loc,
     token: union(enum) {
         sym: []const u8,
-        num: f64,
+        num: f32,
         op: Operator,
         variable: Variable,
         open,
@@ -195,7 +255,7 @@ const Tokenizer = struct {
                         i += 1;
                         while (i < self.buffer.len and std.ascii.isDigit(self.buffer[i])) i += 1;
                     }
-                    const num = try std.fmt.parseFloat(f64, self.buffer[0..i]);
+                    const num = try std.fmt.parseFloat(f32, self.buffer[0..i]);
                     return self.consume(i, .{ .num = num });
                 } else if (isSym(c)) {
                     var i: usize = 1;
@@ -280,21 +340,21 @@ pub const Parser = struct {
         };
 
         switch (token.token) {
-            .sym => |sym| {
+            .sym => |s| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .sym = sym } }).alloc(self.allocator);
+                return Expr.init(self.allocator, token.loc, .{ .sym = .{ .sym = s, .resolve = null } });
             },
             .num => |n| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .num = n } }).alloc(self.allocator);
+                return Expr.init(self.allocator, token.loc, .{ .num = n });
             },
             .op => |op| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .op = op } }).alloc(self.allocator);
+                return Expr.init(self.allocator, token.loc, .{ .op = op });
             },
             .variable => |v| {
                 _ = try self.tok.next();
-                return (Expr{ .loc = token.loc, .expr = .{ .variable = v } }).alloc(self.allocator);
+                return Expr.init(self.allocator, token.loc, .{ .variable = v });
             },
             .open => {
                 _ = try self.tok.next();
@@ -305,20 +365,18 @@ pub const Parser = struct {
 
                     const end_loc = (try self.tok.expect(.close)).loc;
 
-                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .def = .{ .name = name, .expr = expr } } }).alloc(self.allocator);
+                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .def = .{ .name = name, .expr = expr } });
                 } else if (try self.tok.next_if_kind(.plot)) |_| {
                     const expr = try self.next_expect();
                     errdefer expr.free(self.allocator);
 
                     const end_loc = (try self.tok.expect(.close)).loc;
 
-                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .plot = expr } }).alloc(self.allocator);
+                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .plot = expr });
                 } else {
                     var args = std.ArrayList(*Expr).empty;
                     errdefer {
-                        for (args.items) |e| {
-                            e.free(self.allocator);
-                        }
+                        for (args.items) |e| e.free(self.allocator);
                         args.deinit(self.allocator);
                     }
                     try args.append(self.allocator, try self.next_expect());
@@ -331,7 +389,7 @@ pub const Parser = struct {
 
                     const end_loc = (try self.tok.expect(.close)).loc;
 
-                    return (Expr{ .loc = token.loc.extend(end_loc), .expr = .{ .app = args } }).alloc(self.allocator);
+                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .app = args });
                 }
             },
             .close, .def, .plot => {
@@ -364,7 +422,7 @@ test "tokenizer" {
     try expect((try tok.next()).?.token == .sym);
     try expect((try tok.next()).?.token == .open);
     try expect((try tok.next()).?.token.op == .pow);
-    try expect((try tok.next()).?.token == .sym);
+    try expect((try tok.next()).?.token.variable == .x);
     try expect((try tok.next()).?.token.num == 2);
     try expect((try tok.next()).?.token == .close);
     try expect((try tok.next()).?.token == .close);
@@ -381,7 +439,7 @@ test "parser-def" {
     const expr = (try par.next()).?;
     defer expr.free(std.testing.allocator);
     try expect(std.mem.eql(u8, expr.expr.def.name, "f"));
-    try expect(std.mem.eql(u8, expr.expr.def.expr.expr.sym, "x"));
+    try expect(expr.expr.def.expr.expr.variable == .x);
 }
 
 test "parser-def-dont-leak" {
@@ -395,7 +453,7 @@ test "parser-app" {
     defer expr.free(std.testing.allocator);
     try expect(expr.expr.app.items[0].expr.op == .pow);
     try expect(expr.expr.app.items[1].expr.num == 2);
-    try expect(std.mem.eql(u8, expr.expr.app.items[2].expr.sym, "x"));
+    try expect(expr.expr.app.items[2].expr.variable == .x);
 }
 
 test "parser-app-dont-leak" {

@@ -18,7 +18,6 @@ const Expr = parser.Expr;
 
 const canvasmod = @import("canvas.zig");
 const Canvas = canvasmod.Canvas;
-const BytecodeList = canvasmod.BytecodeList;
 const Operator = canvasmod.Operator;
 const Variable = canvasmod.Variable;
 
@@ -33,7 +32,8 @@ const State = struct {
         Undefined,
         Redefinition,
         Invalid,
-    } || canvasmod.BytecodeVM.Error || std.mem.Allocator.Error;
+        CannotEval,
+    } || std.mem.Allocator.Error;
 
     fn init(allocator: std.mem.Allocator, logerror: bool, logtime: bool) std.mem.Allocator.Error!State {
         return .{
@@ -48,93 +48,49 @@ const State = struct {
     fn deinit(self: *State) void {
         var iter = self.vars.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.*.deep_free(self.allocator);
+            entry.value_ptr.*.free(self.allocator);
         }
         self.vars.deinit();
         self.canvas.deinit();
     }
 
-    fn compile(self: *State, expr: *Expr, bytecodes: *BytecodeList) State.Error!void {
+    fn eval(self: *State, expr: *Expr) State.Error!void {
+        if (expr.x or expr.y) {
+            if (self.logerror) printError(expr.loc, "cannot eval variable dependent expression not in plot, maybe wrap in (plot ...)", .{});
+            return State.Error.CannotEval;
+        }
+
         switch (expr.expr) {
-            .op, .def, .plot => {
-                printError(expr.loc, "invalid expression to compile", .{});
-                return State.Error.Invalid;
-            },
-            .sym => |sym| {
-                if (self.vars.get(sym)) |e| {
-                    try self.compile(e, bytecodes);
+            .variable => unreachable,
+            .sym => |s| {
+                if (self.vars.get(s.sym)) |v| {
+                    try self.eval(v);
                 } else {
                     if (self.logerror) printError(expr.loc, "undefined symbol", .{});
                     return State.Error.Undefined;
                 }
             },
-            .num => |n| try bytecodes.append(self.allocator, .{ .num = n }),
-            .variable => |v| try bytecodes.append(self.allocator, .{ .variable = v }),
-            .app => |app| {
-                if (app.items[0].expr == .op) {
-                    const op = app.items[0].expr.op;
-                    if (app.items.len != op.argNumber() + 1) {
-                        if (self.logerror) printError(expr.loc, "missing op args, expected {}, found {}", .{ op.argNumber(), app.items.len - 1 });
-                        return canvasmod.BytecodeVM.Error.MissingOpArgs;
-                    }
-                    for (app.items[1..]) |e| {
-                        try self.compile(e, bytecodes);
-                    }
-                    try bytecodes.append(self.allocator, .{ .op = op });
-                } else {
-                    unreachable;
-                }
-            },
-        }
-    }
-
-    fn eval(self: *State, expr: *Expr) State.Error!void {
-        switch (expr.expr) {
-            .sym, .num, .op, .variable, .app => {
+            .op, .num, .app => {
                 printError(expr.loc, "invalid expression to eval", .{});
                 return State.Error.Invalid;
             },
-            .def => {
-                if (self.vars.get(expr.expr.def.name)) |_| {
+            .def => |def| {
+                if (self.vars.get(def.name)) |_| {
                     printError(expr.loc, "redefinition", .{});
                     return State.Error.Redefinition;
                 } else {
-                    try self.vars.put(expr.expr.def.name, try expr.expr.def.expr.deep_clone(self.allocator));
+                    try self.vars.put(def.name, try def.expr.clone(self.allocator));
                 }
             },
-            .plot => |plot| {
-                var start = std.time.nanoTimestamp();
+            .plot => |e| {
+                const start = std.time.nanoTimestamp();
 
-                var bytecodes = BytecodeList.empty;
-                try self.compile(plot, &bytecodes);
-                defer bytecodes.deinit(self.allocator);
+                try self.canvas.plot(e);
 
                 if (self.logtime) {
                     const now = std.time.nanoTimestamp();
-                    std.debug.print("compiling time: {d:.3} ms, ", .{@as(f64, @floatFromInt(now - start)) * 1e-6});
-                    start = now;
+                    std.debug.print("time plotting: {d:.3} ms\n", .{@as(f32, @floatFromInt(now - start)) * 1e-6});
                 }
-
-                std.debug.print("{any}\n", .{bytecodes.items.items});
-
-                if ((bytecodes.x and bytecodes.y) or
-                    (plot.expr == .app and
-                        plot.expr.app.items[0].expr == .op and
-                        (plot.expr.app.items[0].expr.op == .eq or plot.expr.app.items[0].expr.op == .lt)))
-                {
-                    try self.canvas.plotXY(bytecodes);
-                } else if (bytecodes.x) {
-                    try self.canvas.plotX(bytecodes);
-                } else if (bytecodes.x) {
-                    try self.canvas.plotY(bytecodes);
-                }
-
-                if (self.logtime) {
-                    const now = std.time.nanoTimestamp();
-                    std.debug.print("plotting time: {d:.3} ms\n", .{@as(f64, @floatFromInt(now - start)) * 1e-6});
-                }
-
-                self.canvas.saveToFile("x2.png");
             },
         }
     }
@@ -168,4 +124,6 @@ pub fn main() !void {
         state.eval(expr) catch {};
         expr.free(allocator);
     }
+
+    state.canvas.saveToFile("x2.png");
 }

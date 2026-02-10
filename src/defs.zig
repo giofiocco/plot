@@ -45,3 +45,30 @@ pub fn printError(loc: Loc, comptime fmt: [:0]const u8, args: anytype) void {
     std.debug.print("{:5} | {s}\n", .{ loc.row, loc.line });
     std.debug.print("      | {[a]s:[col]}{[b]s:~^[len]}\n", .{ .a = "^", .b = "", .col = loc.col, .len = loc.len - 1 });
 }
+
+pub const FloatRange = struct {
+    min: f32,
+    max: f32,
+    step: f32,
+    count: usize,
+    i: usize,
+
+    pub fn fromStep(min: f32, max: f32, step: f32) FloatRange {
+        return .{ .min = min, .max = max, .step = step, .count = 1 + @as(usize, @intFromFloat(@ceil((max - min) / step))), .i = 0 };
+    }
+
+    pub fn fromCount(min: f32, max: f32, count: usize) FloatRange {
+        return .{ .min = min, .max = max, .step = (max - min) / count, .count = count, .i = 0 };
+    }
+
+    fn reset(self: *FloatRange) void {
+        self.i = 0;
+    }
+
+    fn next(self: *FloatRange) ?f32 {
+        const v = self.min + self.step * @as(f32, @floatFromInt(self.i));
+        self.i += 1;
+        if (self.i > self.count) return null;
+        return v;
+    }
+};
