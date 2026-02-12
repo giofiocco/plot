@@ -90,6 +90,7 @@ pub const Canvas = struct {
         };
         @memset(self.data, 0);
 
+        // TODO: for bool or xy creates wierd effects or gets deleted
         const wy = self.width * @as(usize, @intFromFloat(self.origin.y));
         const wx = @as(usize, @intFromFloat(self.origin.x));
         for (0..self.width) |x| {
@@ -124,29 +125,29 @@ pub const Canvas = struct {
             .bool => {
                 for (0..self.height) |y| {
                     float_y = (@as(f32, @floatFromInt(y)) - self.origin.y) * self.scale;
-
                     for (0..self.width) |x| {
                         float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
-
-                        if (expr.eval(float_x, float_y)) {
-                            eval_count += 1;
-                        }
-
+                        if (expr.eval(float_x, float_y)) eval_count += 1;
                         self.setAt(x, y, expr.value.?);
+                    }
+                }
+            },
+            .xy => {
+                for (0..self.height) |y| {
+                    float_y = (@as(f32, @floatFromInt(y)) - self.origin.y) * self.scale;
+                    for (0..self.width) |x| {
+                        float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
+                        if (expr.eval(float_x, float_y)) eval_count += 1;
+                        self.setAt(x, y, 1 - 20 * @abs(expr.value.?));
                     }
                 }
             },
             .x => {
                 for (0..self.height) |y| {
                     float_y = (@as(f32, @floatFromInt(y)) - self.origin.y) * self.scale;
-
                     for (0..self.width) |x| {
                         float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
-
-                        if (expr.eval(float_x, float_y)) {
-                            eval_count += 1;
-                        }
-
+                        if (expr.eval(float_x, float_y)) eval_count += 1;
                         self.setAt(x, y, 1 - 20 * @abs(float_x - expr.value.?));
                     }
                 }
@@ -154,14 +155,9 @@ pub const Canvas = struct {
             .y => {
                 for (0..self.width) |x| {
                     float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
-
                     for (0..self.height) |y| {
                         float_y = (@as(f32, @floatFromInt(y)) - self.origin.y) * self.scale;
-
-                        if (expr.eval(float_x, float_y)) {
-                            eval_count += 1;
-                        }
-
+                        if (expr.eval(float_x, float_y)) eval_count += 1;
                         self.setAt(x, y, 1 - 20 * @abs(float_y - expr.value.?));
                     }
                 }

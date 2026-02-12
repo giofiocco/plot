@@ -9,6 +9,24 @@ const canvas_mod = @import("canvas.zig");
 const Operator = canvas_mod.Operator;
 const Variable = canvas_mod.Variable;
 
+pub const Func = struct {
+    args: std.ArrayList([]const u8),
+    body: *Expr,
+
+    pub fn clone(self: Func, allocator: std.mem.Allocator) std.mem.Allocator.Error!Func {
+        // TODO: maybe clone each args
+        return .{
+            .args = try self.args.clone(allocator),
+            .body = try self.body.clone(allocator),
+        };
+    }
+
+    pub fn free(self: *Func, allocator: std.mem.Allocator) void {
+        self.args.deinit(allocator);
+        self.body.free(allocator);
+    }
+};
+
 pub const Expr = struct {
     loc: Loc,
     expr: union(enum) {
@@ -17,21 +35,21 @@ pub const Expr = struct {
         op: Operator,
         variable: Variable,
         app: std.ArrayList(*Expr),
-        def: struct { name: []const u8, expr: *Expr },
+        def: struct { name: []const u8, func: Func },
         plot: *Expr,
     },
     value: ?f32,
-    outkind: enum(u3) { x, y, bool },
     lastx: f32,
     lasty: f32,
+    outkind: enum(u3) { x, y, xy, bool },
     x: bool,
     y: bool,
 
     const epsilon = 0.001;
 
     fn init(allocator: std.mem.Allocator, loc: Loc, expr: @FieldType(Expr, "expr")) std.mem.Allocator.Error!*Expr {
-        const ptr = try allocator.create(Expr);
-        ptr.* = .{
+        const self = try allocator.create(Expr);
+        self.* = .{
             .loc = loc,
             .expr = expr,
             .value = null,
@@ -41,36 +59,16 @@ pub const Expr = struct {
             .x = false,
             .y = false,
         };
-        switch (expr) {
-            .sym, .op, .def, .plot => {},
-            .num => |n| ptr.value = n,
-            .variable => |v| switch (v) {
-                .x => ptr.x = true,
-                .y => ptr.y = true,
-            },
-            .app => |app| {
-                for (app.items) |e| {
-                    ptr.x |= e.x;
-                    ptr.y |= e.y;
-                    if (e.outkind == .bool) ptr.outkind = .bool;
-                }
-
-                if (app.items[0].expr == .op and app.items[0].expr.op.isOutBool()) {
-                    ptr.outkind = .bool;
-                }
-            },
-        }
-        if (ptr.outkind != .bool and ptr.y) ptr.outkind = .x;
-        return ptr;
+        return self;
     }
 
     pub fn clone(self: Expr, allocator: std.mem.Allocator) std.mem.Allocator.Error!*Expr {
         const ptr = try allocator.create(Expr);
         ptr.* = self;
-
         switch (self.expr) {
             .num, .op, .variable => {},
-            .sym => |s| ptr.expr.sym.sym = try allocator.dupe(u8, s.sym),
+            .sym => {}, // TODO:
+            //.sym => |s| ptr.expr.sym.sym = try allocator.dupe(u8, s.sym),
             .app => |app| {
                 ptr.expr.app = try .initCapacity(allocator, app.capacity);
                 for (app.items) |e| {
@@ -79,23 +77,26 @@ pub const Expr = struct {
             },
             .def => |def| {
                 ptr.expr.def.name = try allocator.dupe(u8, def.name);
-                ptr.expr.def.expr = try def.expr.clone(allocator);
+                ptr.expr.def.func = try def.func.clone(allocator);
             },
             .plot => |e| ptr.expr.plot = try e.clone(allocator),
         }
-
         return ptr;
     }
 
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
             .num, .op, .variable => {},
-            .sym => |s| allocator.free(s.sym),
-            .app => |app| {
+            .sym => {},
+            //.sym => |s| allocator.free(s.sym), // TODO: what
+            .app => |*app| {
                 for (app.items) |e| e.free(allocator);
-                self.expr.app.deinit(allocator);
+                app.deinit(allocator);
             },
-            .def => |def| def.expr.free(allocator),
+            .def => |*def| {
+                // for (def.deps.items) |s| allocator.free(s);
+                def.func.free(allocator);
+            },
             .plot => |e| e.free(allocator),
         }
         allocator.destroy(self);
@@ -103,7 +104,7 @@ pub const Expr = struct {
 
     pub fn format(self: Expr, w: *std.Io.Writer) !void {
         switch (self.expr) {
-            .sym => |s| try w.print("{s}", .{s.sym}),
+            .sym => |s| try w.print("{s} {{{?f}}}", .{ s.sym, s.resolve }),
             .num => |n| try w.print("{}", .{n}),
             .op => |op| try w.print("{s}", .{op.toString()}),
             .variable => |v| try w.print("{s}", .{@tagName(v)}),
@@ -115,8 +116,62 @@ pub const Expr = struct {
                 }
                 try w.print(")", .{});
             },
-            .def => |def| try w.print("(def {s} {f})", .{ def.name, def.expr }),
+            .def => |def| {
+                try w.print("(def ({s}", .{def.name});
+                for (def.func.args.items) |s| {
+                    try w.print(" {s}", .{s});
+                }
+                try w.print(") {f})", .{def.func.body});
+            },
             .plot => |plot| try w.print("(plot {f})", .{plot}),
+        }
+    }
+
+    pub fn debug(self: *Expr) void {
+        std.debug.print("{f} x:{} y:{} out:{}\n", .{ self, self.x, self.y, self.outkind });
+    }
+
+    pub fn compute_dep_out(self: *Expr) void {
+        // TODO: put x y outkind altogheter
+        switch (self.expr) {
+            .num, .op => {},
+            .sym => |s| {
+                s.resolve.?.compute_dep_out();
+                self.x = s.resolve.?.x;
+                self.y = s.resolve.?.y;
+                self.outkind = s.resolve.?.outkind;
+            },
+            .variable => |v| switch (v) {
+                .x => self.x = true,
+                .y => self.y = true,
+            },
+            .app => |app| {
+                const first = app.items[0].expr;
+                if (first == .sym) {
+                    first.sym.resolve.?.compute_dep_out();
+                    self.x = first.sym.resolve.?.x;
+                    self.y = first.sym.resolve.?.y;
+                    self.outkind = first.sym.resolve.?.outkind;
+                } else {
+                    for (app.items) |e| {
+                        e.compute_dep_out();
+                        self.x |= e.x;
+                        self.y |= e.y;
+                        if (e.outkind == .bool) self.outkind = .bool;
+                    }
+
+                    if (first == .op and first.op.isOutBool()) {
+                        self.outkind = .bool;
+                    }
+                }
+            },
+            .def, .plot => unreachable,
+        }
+        if (self.outkind != .bool) {
+            if (self.x and self.y)
+                self.outkind = .xy
+            else if (self.y)
+                self.outkind = .x;
         }
     }
 
@@ -151,6 +206,11 @@ pub const Expr = struct {
                             .lt => std.math.clamp(1 - 30 * (app.items[1].value.? - app.items[2].value.?), 0, 1),
                             .et => app.items[1].value.? * app.items[2].value.?,
                         };
+                    } else if (app.items[0].expr == .sym) {
+                        _ = eval(app.items[0].expr.sym.resolve.?, x, y);
+                        self.value = app.items[0].expr.sym.resolve.?.value;
+                    } else {
+                        unreachable;
                     }
                 },
                 .op => unreachable, // TODO: error
@@ -359,13 +419,34 @@ pub const Parser = struct {
             .open => {
                 _ = try self.tok.next();
                 if (try self.tok.next_if_kind(.def)) |_| {
-                    const name = (try self.tok.expect(.sym)).token.sym;
+                    var name: ?[]const u8 = null;
+                    var args = std.ArrayList([]const u8).empty;
+
+                    const def = try self.next_expect();
+                    defer def.free(self.allocator);
+                    if (def.expr == .app) {
+                        for (def.expr.app.items, 0..) |e, i| {
+                            if (e.expr != .sym) {
+                                unreachable; // TODO: error
+                            }
+                            if (i == 0) {
+                                name = e.expr.sym.sym;
+                            } else {
+                                try args.append(self.allocator, e.expr.sym.sym);
+                            }
+                        }
+                    } else if (def.expr == .sym) {
+                        name = def.expr.sym.sym;
+                    } else {
+                        unreachable; // TODO: error
+                    }
+
                     const expr = try self.next_expect();
                     errdefer expr.free(self.allocator);
 
                     const end_loc = (try self.tok.expect(.close)).loc;
 
-                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .def = .{ .name = name, .expr = expr } });
+                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .def = .{ .name = name.?, .func = .{ .args = args, .body = expr } } });
                 } else if (try self.tok.next_if_kind(.plot)) |_| {
                     const expr = try self.next_expect();
                     errdefer expr.free(self.allocator);
