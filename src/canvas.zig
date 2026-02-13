@@ -15,7 +15,9 @@ pub const Operator = enum {
     mul,
     eq,
     lt,
-    et,
+    and_,
+    or_,
+    not,
 
     const max_args = 2;
 
@@ -28,21 +30,23 @@ pub const Operator = enum {
             .mul => "*",
             .eq => "=",
             .lt => "<",
-            .et => "&",
+            .and_ => "&",
+            .or_ => "|",
+            .not => "!",
         };
     }
 
     pub fn argNumber(self: Operator) usize {
         return switch (self) {
-            .pow, .sub, .sum, .mul, .eq, .lt, .et => 2,
-            .sin => 1,
+            .pow, .sub, .sum, .mul, .eq, .lt, .and_, .or_ => 2,
+            .sin, .not => 1,
         };
     }
 
     pub fn isOutBool(self: Operator) bool {
         return switch (self) {
             .pow, .sin, .sub, .sum, .mul => false,
-            .eq, .lt, .et => true,
+            .eq, .lt, .and_, .or_, .not => true,
         };
     }
 };
@@ -72,6 +76,8 @@ pub const Canvas = struct {
     origin: Point,
     data: []u8,
 
+    const epsilon = 0.01;
+
     pub fn init(allocator: std.mem.Allocator, width: usize, height: usize, scale: f32, origin: union(enum) { point: Point, anchor: Anchor }) std.mem.Allocator.Error!Canvas {
         const self = Canvas{
             .allocator = allocator,
@@ -91,14 +97,14 @@ pub const Canvas = struct {
         @memset(self.data, 0);
 
         // TODO: for bool or xy creates wierd effects or gets deleted
-        const wy = self.width * @as(usize, @intFromFloat(self.origin.y));
-        const wx = @as(usize, @intFromFloat(self.origin.x));
-        for (0..self.width) |x| {
-            self.data[wy + x] = 128;
-        }
-        for (0..self.height) |y| {
-            self.data[y * self.width + wx] = 128;
-        }
+        // const wy = self.width * @as(usize, @intFromFloat(self.origin.y));
+        // const wx = @as(usize, @intFromFloat(self.origin.x));
+        // for (0..self.width) |x| {
+        //     self.data[wy + x] = 128;
+        // }
+        // for (0..self.height) |y| {
+        //     self.data[y * self.width + wx] = 128;
+        // }
 
         return self;
     }
@@ -138,7 +144,7 @@ pub const Canvas = struct {
                     for (0..self.width) |x| {
                         float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
                         if (expr.eval(float_x, float_y)) eval_count += 1;
-                        self.setAt(x, y, 1 - 20 * @abs(expr.value.?));
+                        self.setAt(x, y, 1 - @abs(expr.value.?) / epsilon);
                     }
                 }
             },
@@ -148,7 +154,7 @@ pub const Canvas = struct {
                     for (0..self.width) |x| {
                         float_x = (@as(f32, @floatFromInt(x)) - self.origin.x) * self.scale;
                         if (expr.eval(float_x, float_y)) eval_count += 1;
-                        self.setAt(x, y, 1 - 20 * @abs(float_x - expr.value.?));
+                        self.setAt(x, y, 1 - @abs(float_x - expr.value.?) / epsilon);
                     }
                 }
             },
@@ -158,7 +164,7 @@ pub const Canvas = struct {
                     for (0..self.height) |y| {
                         float_y = (@as(f32, @floatFromInt(y)) - self.origin.y) * self.scale;
                         if (expr.eval(float_x, float_y)) eval_count += 1;
-                        self.setAt(x, y, 1 - 20 * @abs(float_y - expr.value.?));
+                        self.setAt(x, y, 1 - @abs(float_y - expr.value.?) / epsilon);
                     }
                 }
             },

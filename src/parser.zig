@@ -66,9 +66,7 @@ pub const Expr = struct {
         const ptr = try allocator.create(Expr);
         ptr.* = self;
         switch (self.expr) {
-            .num, .op, .variable => {},
-            .sym => {}, // TODO:
-            //.sym => |s| ptr.expr.sym.sym = try allocator.dupe(u8, s.sym),
+            .sym, .num, .op, .variable => {},
             .app => |app| {
                 ptr.expr.app = try .initCapacity(allocator, app.capacity);
                 for (app.items) |e| {
@@ -86,15 +84,12 @@ pub const Expr = struct {
 
     pub fn free(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.expr) {
-            .num, .op, .variable => {},
-            .sym => {},
-            //.sym => |s| allocator.free(s.sym), // TODO: what
+            .sym, .num, .op, .variable => {},
             .app => |*app| {
                 for (app.items) |e| e.free(allocator);
                 app.deinit(allocator);
             },
             .def => |*def| {
-                // for (def.deps.items) |s| allocator.free(s);
                 def.func.free(allocator);
             },
             .plot => |e| e.free(allocator),
@@ -104,7 +99,7 @@ pub const Expr = struct {
 
     pub fn format(self: Expr, w: *std.Io.Writer) !void {
         switch (self.expr) {
-            .sym => |s| try w.print("{s} {{{?f}}}", .{ s.sym, s.resolve }),
+            .sym => |s| try w.print("{s}", .{s.sym}),
             .num => |n| try w.print("{}", .{n}),
             .op => |op| try w.print("{s}", .{op.toString()}),
             .variable => |v| try w.print("{s}", .{@tagName(v)}),
@@ -191,21 +186,27 @@ pub const Expr = struct {
                     .y => self.value = y,
                 },
                 .app => |app| {
-                    if (app.items[0].expr == .op) {
+                    const first = app.items[0].expr;
+                    if (first == .op) {
                         for (app.items[1..]) |e| {
                             _ = e.eval(x, y);
                         }
 
-                        self.value = switch (app.items[0].expr.op) {
+                        self.value = switch (first.op) {
                             .pow => std.math.pow(f32, app.items[2].value.?, app.items[1].value.?),
                             .sin => std.math.sin(app.items[1].value.?),
                             .sub => app.items[1].value.? - app.items[2].value.?,
                             .sum => app.items[1].value.? + app.items[2].value.?,
                             .mul => app.items[1].value.? * app.items[2].value.?,
-                            .eq => std.math.clamp(1 - 30 * @abs(app.items[1].value.? - app.items[2].value.?), 0, 1),
-                            .lt => std.math.clamp(1 - 30 * (app.items[1].value.? - app.items[2].value.?), 0, 1),
-                            .et => app.items[1].value.? * app.items[2].value.?,
+                            .eq => 1 - 30 * @abs(app.items[1].value.? - app.items[2].value.?), // TODO: unify 1 - 30 * and 1 - .../epsilon in canvas.plot
+                            .lt => 1 - 30 * (app.items[1].value.? - app.items[2].value.?),
+                            .and_ => app.items[1].value.? * app.items[2].value.?,
+                            .or_ => app.items[1].value.? + app.items[2].value.?,
+                            .not => 1 - 30 * app.items[1].value.?,
                         };
+                        if (first.op.isOutBool()) {
+                            self.value = std.math.clamp(self.value.?, 0, 1);
+                        }
                     } else if (app.items[0].expr == .sym) {
                         _ = eval(app.items[0].expr.sym.resolve.?, x, y);
                         self.value = app.items[0].expr.sym.resolve.?.value;
@@ -383,6 +384,7 @@ pub const Parser = struct {
         InvalidChar,
         UnexpectedToken,
         UnexpectedEOF,
+        MismatchedArgNumber,
     } || std.mem.Allocator.Error || std.fmt.ParseIntError;
 
     pub fn init(buffer: []const u8, filename: []const u8, allocator: std.mem.Allocator, logerror: bool) Parser {
@@ -469,8 +471,14 @@ pub const Parser = struct {
                     }
 
                     const end_loc = (try self.tok.expect(.close)).loc;
+                    const loc = token.loc.extend(end_loc);
 
-                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .app = args });
+                    if (args.items[0].expr == .op and args.items[0].expr.op.argNumber() + 1 != args.items.len) {
+                        if (self.logerror) printError(loc, "expected {} args, found {}", .{ args.items[0].expr.op.argNumber(), args.items.len - 1 });
+                        return Parser.Error.MismatchedArgNumber;
+                    }
+
+                    return Expr.init(self.allocator, loc, .{ .app = args });
                 }
             },
             .close, .def, .plot => {

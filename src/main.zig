@@ -1,6 +1,6 @@
 const std = @import("std");
-const stdout = std.fs.File.stdout();
-const stdin = std.fs.File.stdin();
+const stdout = std.fs.File.stdout().writer();
+const stdin = std.fs.File.stdin().reader();
 const assert = std.debug.assert;
 
 pub const c = @cImport({
@@ -21,6 +21,8 @@ const canvasmod = @import("canvas.zig");
 const Canvas = canvasmod.Canvas;
 const Operator = canvasmod.Operator;
 const Variable = canvasmod.Variable;
+
+// TODO: prevend (def .. (def ..))
 
 const State = struct {
     vars: std.StringHashMap(Func),
@@ -59,25 +61,26 @@ const State = struct {
         self.canvas.deinit();
     }
 
-    fn solve_symbols(self: *State, expr: *Expr) State.Error!void {
+    fn solve_symbols(self: *State, ptr: **Expr) State.Error!void {
+        const expr = ptr.*;
         switch (expr.expr) {
+            .def, .plot => unreachable,
+            .variable, .op, .num => {},
             .sym => |*s| {
                 if (self.vars.get(s.sym)) |v| {
                     if (v.args.items.len > 0) {
                         if (self.logerror) printError(expr.loc, "symbol expects {} arguments, try call with ({s} ...)", .{ v.args.items.len, s.sym });
                         return State.Error.NoArgs;
                     }
-                    try self.solve_symbols(v.body);
-                    s.resolve = v.body;
-                    expr.x = s.resolve.?.x;
-                    expr.y = s.resolve.?.y;
-                    expr.outkind = s.resolve.?.outkind;
+                    // TODO: sure?
+                    ptr.* = try v.body.clone(self.allocator);
+                    expr.free(self.allocator);
+                    try self.solve_symbols(ptr);
                 } else {
                     if (self.logerror) printError(expr.loc, "undefined symbol", .{});
                     return State.Error.Undefined;
                 }
             },
-            .variable, .op, .num => {},
             .app => |app| {
                 if (app.items[0].expr == .sym) {
                     if (self.vars.get(app.items[0].expr.sym.sym)) |f| {
@@ -97,26 +100,17 @@ const State = struct {
                             _ = self.vars.remove(arg);
                         };
 
-                        try self.solve_symbols(f.body);
-                        f.body.compute_dep_out();
-                        app.items[0].expr.sym.resolve = f.body;
-                        expr.x = f.body.x;
-                        expr.y = f.body.y;
-                        expr.outkind = f.body.outkind;
-
-                        expr.debug();
-
+                        ptr.* = try f.body.clone(self.allocator);
+                        try self.solve_symbols(ptr);
+                        expr.free(self.allocator);
                         return;
                     }
                 }
 
-                for (app.items) |e| {
+                for (app.items) |*e| {
                     try self.solve_symbols(e);
                 }
             },
-            // .def => |def| try self.solve_symbols(def.expr),
-            .def => {},
-            .plot => |e| try self.solve_symbols(e),
         }
     }
 
@@ -126,25 +120,9 @@ const State = struct {
             return State.Error.CannotEval;
         }
 
-        try self.solve_symbols(expr);
-
+        // TODO: maybe separate statement and expr
         switch (expr.expr) {
-            .variable => unreachable,
-            .sym => |s| {
-                if (self.vars.get(s.sym)) |v| {
-                    if (v.args.items.len > 0) {
-                        unreachable; // TODO: error
-                    }
-                    try self.eval(v.body);
-                } else {
-                    if (self.logerror) printError(expr.loc, "undefined symbol", .{});
-                    return State.Error.Undefined;
-                }
-            },
-            .op, .num, .app => {
-                if (self.logerror) printError(expr.loc, "invalid expression to eval", .{});
-                return State.Error.Invalid;
-            },
+            .sym, .num, .op, .variable, .app => unreachable,
             .def => |def| {
                 if (self.vars.get(def.name)) |_| {
                     if (self.logerror) printError(expr.loc, "redefinition", .{});
@@ -156,12 +134,15 @@ const State = struct {
 
                 try self.vars.put(def.name, try def.func.clone(self.allocator));
             },
-            .plot => |e| {
+            .plot => |*e| {
                 const start = std.time.nanoTimestamp();
 
-                e.compute_dep_out();
-                e.debug();
-                try self.canvas.plot(e);
+                try self.solve_symbols(e);
+                std.debug.print("plotting: ", .{});
+                e.*.debug();
+
+                e.*.compute_dep_out();
+                try self.canvas.plot(e.*);
 
                 if (self.logtime) {
                     const now = std.time.nanoTimestamp();
