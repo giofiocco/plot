@@ -12,10 +12,11 @@ pub const c = @cImport({
 const defs = @import("defs.zig");
 const printError = defs.printError;
 
-const parser = @import("parser.zig");
-const Parser = parser.Parser;
-const Expr = parser.Expr;
-const Func = parser.Func;
+const Parser = @import("parser.zig").Parser;
+
+const expr_mod = @import("expr.zig");
+const Expr = expr_mod.Expr;
+const Func = expr_mod.Func;
 
 const canvasmod = @import("canvas.zig");
 const Canvas = canvasmod.Canvas;
@@ -138,10 +139,10 @@ const State = struct {
                 const start = std.time.nanoTimestamp();
 
                 try self.solve_symbols(e);
-                std.debug.print("plotting: ", .{});
-                e.*.debug();
-
                 e.*.compute_dep_out();
+                // std.debug.print("plotting: ", .{});
+                // e.*.debug();
+
                 try self.canvas.plot(e.*);
 
                 if (self.logtime) {

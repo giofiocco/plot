@@ -1,6 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+// TODO: stdout and stderr
+
 pub const Loc = struct {
     row: usize,
     col: usize,

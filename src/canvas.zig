@@ -3,9 +3,9 @@ const assert = std.debug.assert;
 
 const c = @import("main.zig").c;
 
-const Expr = @import("parser.zig").Expr;
+const Expr = @import("expr.zig").Expr;
 
-// TODO: expr op and variables to defs
+// TODO: op and variables to defs
 
 pub const Operator = enum {
     pow,
