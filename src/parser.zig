@@ -159,6 +159,8 @@ const Tokenizer = struct {
     }
 };
 
+// TODO: unify errors
+
 pub const Parser = struct {
     tok: Tokenizer,
     allocator: std.mem.Allocator,
@@ -168,7 +170,6 @@ pub const Parser = struct {
         InvalidChar,
         UnexpectedToken,
         UnexpectedEOF,
-        MismatchedArgNumber,
         InvalidDefName,
     } || std.mem.Allocator.Error || std.fmt.ParseIntError;
 
@@ -189,7 +190,7 @@ pub const Parser = struct {
         switch (token.token) {
             .sym => |s| {
                 _ = try self.tok.next();
-                return Expr.init(self.allocator, token.loc, .{ .sym = .{ .sym = s, .resolve = null } });
+                return Expr.init(self.allocator, token.loc, .{ .sym = s });
             },
             .num => |n| {
                 _ = try self.tok.next();
@@ -214,17 +215,17 @@ pub const Parser = struct {
                     if (def.expr == .app) {
                         for (def.expr.app.items, 0..) |e, i| {
                             if (e.expr != .sym) {
-                                if (self.logerror) printError(e.loc, "invalid def name, expected sym or (sym ...)", .{});
+                                if (self.logerror) printError(e.loc, "invalid token, expected {}", .{.sym});
                                 return Parser.Error.InvalidDefName;
                             }
                             if (i == 0) {
-                                name = e.expr.sym.sym;
+                                name = e.expr.sym;
                             } else {
-                                try args.append(self.allocator, e.expr.sym.sym);
+                                try args.append(self.allocator, e.expr.sym);
                             }
                         }
                     } else if (def.expr == .sym) {
-                        name = def.expr.sym.sym;
+                        name = def.expr.sym;
                     } else {
                         if (self.logerror) printError(def.loc, "invalid def name, expected sym or (sym ...)", .{});
                         return Parser.Error.InvalidDefName;
@@ -258,14 +259,8 @@ pub const Parser = struct {
                     }
 
                     const end_loc = (try self.tok.expect(.close)).loc;
-                    const loc = token.loc.extend(end_loc);
 
-                    if (args.items[0].expr == .op and args.items[0].expr.op.argNumber() + 1 != args.items.len) {
-                        if (self.logerror) printError(loc, "expected {} args, found {}", .{ args.items[0].expr.op.argNumber(), args.items.len - 1 });
-                        return Parser.Error.MismatchedArgNumber;
-                    }
-
-                    return Expr.init(self.allocator, loc, .{ .app = args });
+                    return Expr.init(self.allocator, token.loc.extend(end_loc), .{ .app = args });
                 }
             },
             .close, .def, .plot => {

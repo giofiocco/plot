@@ -14,3 +14,7 @@ examples:
 (plot (& (< (+ (^ 2 x) (^ 2 y)) 1) (< (+ (^ 2 (- x 1)) (^ 2 y)) 1)))
 
 (taylor x0 2 f)
+
+# TODOs
+
+- (def (f o) (o 1 2)) or something

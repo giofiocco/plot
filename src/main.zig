@@ -67,12 +67,12 @@ const State = struct {
         switch (expr.expr) {
             .def, .plot => unreachable,
             .variable, .op, .num => {},
-            .sym => |*s| {
-                if (self.vars.get(s.sym)) |v| {
-                    if (v.args.items.len > 0) {
-                        if (self.logerror) printError(expr.loc, "symbol expects {} arguments, try call with ({s} ...)", .{ v.args.items.len, s.sym });
-                        return State.Error.NoArgs;
-                    }
+            .sym => |s| {
+                if (self.vars.get(s)) |v| {
+                    // if (v.args.items.len > 0) {
+                    //     if (self.logerror) printError(expr.loc, "symbol expects {} arguments, try call with ({s} ...)", .{ v.args.items.len, s.sym });
+                    //     return State.Error.NoArgs;
+                    // }
                     // TODO: sure?
                     ptr.* = try v.body.clone(self.allocator);
                     expr.free(self.allocator);
@@ -84,11 +84,11 @@ const State = struct {
             },
             .app => |app| {
                 if (app.items[0].expr == .sym) {
-                    if (self.vars.get(app.items[0].expr.sym.sym)) |f| {
-                        if (f.args.items.len != app.items.len - 1) {
-                            if (self.logerror) printError(expr.loc, "symbol expects {} arguments, found {}", .{ f.args.items.len, app.items.len - 1 }); // TODO: curring
-                            return State.Error.Invalid;
-                        }
+                    if (self.vars.get(app.items[0].expr.sym)) |f| {
+                        // if (f.args.items.len != app.items.len - 1) {
+                        //     if (self.logerror) printError(expr.loc, "symbol expects {} arguments, found {}", .{ f.args.items.len, app.items.len - 1 }); // TODO: curring
+                        //     return State.Error.Invalid;
+                        // }
 
                         for (f.args.items, 0..) |arg, i| {
                             if (self.vars.get(arg)) |_| {
@@ -104,6 +104,9 @@ const State = struct {
                         ptr.* = try f.body.clone(self.allocator);
                         try self.solve_symbols(ptr);
                         expr.free(self.allocator);
+
+                        ptr.*.debug();
+
                         return;
                     }
                 }

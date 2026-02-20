@@ -29,7 +29,7 @@ pub const Func = struct {
 pub const Expr = struct {
     loc: Loc,
     expr: union(enum) {
-        sym: struct { sym: []const u8, resolve: ?*Expr },
+        sym: []const u8,
         num: f32,
         op: Operator,
         variable: Variable,
@@ -98,7 +98,7 @@ pub const Expr = struct {
 
     pub fn format(self: Expr, w: *std.Io.Writer) !void {
         switch (self.expr) {
-            .sym => |s| try w.print("{s}", .{s.sym}),
+            .sym => |s| try w.print("{s}", .{s}),
             .num => |n| try w.print("{}", .{n}),
             .op => |op| try w.print("{s}", .{op.toString()}),
             .variable => |v| try w.print("{s}", .{@tagName(v)}),
@@ -128,35 +128,22 @@ pub const Expr = struct {
     pub fn compute_dep_out(self: *Expr) void {
         // TODO: put x y outkind altogheter
         switch (self.expr) {
-            .num, .op => {},
-            .sym => |s| {
-                s.resolve.?.compute_dep_out();
-                self.x = s.resolve.?.x;
-                self.y = s.resolve.?.y;
-                self.outkind = s.resolve.?.outkind;
-            },
+            .sym, .num, .op => {},
             .variable => |v| switch (v) {
                 .x => self.x = true,
                 .y => self.y = true,
             },
             .app => |app| {
                 const first = app.items[0].expr;
-                if (first == .sym) {
-                    first.sym.resolve.?.compute_dep_out();
-                    self.x = first.sym.resolve.?.x;
-                    self.y = first.sym.resolve.?.y;
-                    self.outkind = first.sym.resolve.?.outkind;
-                } else {
-                    for (app.items) |e| {
-                        e.compute_dep_out();
-                        self.x |= e.x;
-                        self.y |= e.y;
-                        if (e.outkind == .bool) self.outkind = .bool;
-                    }
+                for (app.items) |e| {
+                    e.compute_dep_out();
+                    self.x |= e.x;
+                    self.y |= e.y;
+                    if (e.outkind == .bool) self.outkind = .bool;
+                }
 
-                    if (first == .op and first.op.isOutBool()) {
-                        self.outkind = .bool;
-                    }
+                if (first == .op and first.op.isOutBool()) {
+                    self.outkind = .bool;
                 }
             },
             .def, .plot => unreachable,
@@ -175,10 +162,7 @@ pub const Expr = struct {
             (self.y and @abs(self.lasty - y) > epsilon))
         {
             switch (self.expr) {
-                .sym => |s| {
-                    _ = s.resolve.?.eval(x, y);
-                    self.value = s.resolve.?.value;
-                },
+                .sym => unreachable,
                 .num => |n| self.value = n,
                 .variable => |v| switch (v) {
                     .x => self.value = x,
@@ -206,9 +190,6 @@ pub const Expr = struct {
                         if (first.op.isOutBool()) {
                             self.value = std.math.clamp(self.value.?, 0, 1);
                         }
-                    } else if (app.items[0].expr == .sym) {
-                        _ = eval(app.items[0].expr.sym.resolve.?, x, y);
-                        self.value = app.items[0].expr.sym.resolve.?.value;
                     } else {
                         unreachable;
                     }
